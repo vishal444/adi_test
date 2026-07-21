@@ -14,24 +14,24 @@ Requirement: Python 3.11+. NetworkX is installed with the project; no graph serv
 python3 -m venv .venv
 source .venv/bin/activate
 python3 -m pip install -e .
-python3 -m kerala_kg_llm graph-init
-python3 -m kerala_kg_llm init --reset
-python3 -m kerala_kg_llm query \
+python3 -m kgraph_llm graph-init
+python3 -m kgraph_llm init --reset
+python3 -m kgraph_llm query \
   "Which hospitals received more operating funding without comparable output growth?"
 ```
 
-`graph-init` compiles the active ministry graph definitions into `var/knowledge_graph.json`. Set `KGRAPH_PATH` only if a different location is required. Inspect its counts with `python3 -m kerala_kg_llm graph-status`.
+`graph-init` compiles the active ministry graph definitions into `var/knowledge_graph.json`. Set `KGRAPH_PATH` only if a different location is required. Inspect its counts with `python3 -m kgraph_llm graph-status`.
 
 Show active and planned ministry modules:
 
 ```bash
-python3 -m kerala_kg_llm ministries
+python3 -m kgraph_llm ministries
 ```
 
 For a larger test database, load exactly 2,000 rows into each high-cardinality business table:
 
 ```bash
-python3 -m kerala_kg_llm seed --rows-per-table 2000 --reset
+python3 -m kgraph_llm seed --rows-per-table 2000 --reset
 ```
 
 This creates 2,000 hospitals, 2,000 funding records, and 2,000 output records. The two fact tables contain 2022 and 2025 observations for 1,000 hospitals, enabling growth comparisons. The district table contains Kerala's 14 districts. Semantic metadata and audit tables are intentionally not padded with meaningless records.
@@ -39,7 +39,7 @@ This creates 2,000 hospitals, 2,000 funding records, and 2,000 output records. T
 To inspect the complete question specification, graph context, SQL, rows, and provenance:
 
 ```bash
-python3 -m kerala_kg_llm query \
+python3 -m kgraph_llm query \
   "Compare hospital funding and output from 2022 to 2025" --json
 ```
 
@@ -56,7 +56,7 @@ The default `local` provider is deterministic and intended for development, demo
 ```bash
 export OPENAI_API_KEY="..."
 export OPENAI_MODEL="gpt-5.6-terra"  # optional
-python3 -m kerala_kg_llm query \
+python3 -m kgraph_llm query \
   "Compare hospital funding and output from 2022 to 2025" \
   --provider openai
 ```
@@ -79,13 +79,13 @@ These controls reduce risk; they do not make arbitrary generated SQL safe for pr
 
 ## Repository map
 
-- `kerala_kg_llm/orchestration/` — end-to-end governed flow.
-- `kerala_kg_llm/knowledge_graph/` — NetworkX persistence, graph bootstrap, and subgraph retrieval control.
-- `kerala_kg_llm/llm_control/` — provider-neutral LLM contract and live providers.
-- `kerala_kg_llm/governance/` — deterministic SQL and policy gates.
-- `kerala_kg_llm/storage/` — database bootstrap, execution, and audit control.
-- `kerala_kg_llm/ministries/` — independently owned ministry domain modules.
-- `kerala_kg_llm/ministries/health/` — active Health schema, semantic metadata, methods, and synthetic data.
+- `kgraph_llm/orchestration/` — end-to-end governed flow.
+- `kgraph_llm/knowledge_graph/` — NetworkX persistence, graph bootstrap, and subgraph retrieval control.
+- `kgraph_llm/llm_control/` — provider-neutral LLM contract and live providers.
+- `kgraph_llm/governance/` — deterministic SQL and policy gates.
+- `kgraph_llm/storage/` — database bootstrap, execution, and audit control.
+- `kgraph_llm/ministries/` — independently owned ministry domain modules.
+- `kgraph_llm/ministries/health/` — active Health schema, semantic metadata, methods, and synthetic data.
 - `docs/project-structure.md` — dependency rules and ministry onboarding plan.
 - `docs/networkx-kgraph.md` — NetworkX node/edge model and operations.
 - `docs/architecture-decisions.md` — corrections applied to the source architecture.

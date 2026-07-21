@@ -5,17 +5,17 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from kerala_kg_llm.governance import SQLGuard, UnsafeSQL
-from kerala_kg_llm.knowledge_graph import NetworkXSemanticGraph
-from kerala_kg_llm.ministries.health.local_llm import LocalHealthDemoLLM
-from kerala_kg_llm.ministries.health.synthetic import seed_synthetic_business_data
-from kerala_kg_llm.ministries.registry import (
+from kgraph_llm.governance import SQLGuard, UnsafeSQL
+from kgraph_llm.knowledge_graph import NetworkXSemanticGraph
+from kgraph_llm.ministries.health.local_llm import LocalHealthDemoLLM
+from kgraph_llm.ministries.health.synthetic import seed_synthetic_business_data
+from kgraph_llm.ministries.registry import (
     MINISTRIES,
     active_graph_definitions,
     active_ministries,
 )
-from kerala_kg_llm.orchestration import GovernedQueryPipeline
-from kerala_kg_llm.storage import Database
+from kgraph_llm.orchestration import GovernedQueryPipeline
+from kgraph_llm.storage import Database
 
 
 class PipelineTest(unittest.TestCase):

@@ -28,8 +28,8 @@ The query pipeline traverses aliases and `AVAILABLE_IN` edges to select relevant
 The default file is `var/knowledge_graph.json`, using NetworkX's node-link JSON representation. Override it with `KGRAPH_PATH`.
 
 ```bash
-python3 -m kerala_kg_llm graph-init
-python3 -m kerala_kg_llm graph-status
+python3 -m kgraph_llm graph-init
+python3 -m kgraph_llm graph-status
 ```
 
 `graph-init` deterministically rebuilds the file from active definitions in `ministries/registry.py`. Graph metadata is not mixed into the analytical SQLite database.

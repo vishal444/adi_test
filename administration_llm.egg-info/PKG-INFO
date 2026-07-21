@@ -1,5 +1,5 @@
 Metadata-Version: 2.4
-Name: kerala-governed-llm
+Name: administration-llm
 Version: 0.1.0
 Summary: Governed natural-language to semantic graph to read-only SQL pilot
 Requires-Python: >=3.11

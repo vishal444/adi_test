@@ -3,17 +3,17 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "kerala-governed-llm"
+name = "administration-llm"
 version = "0.1.0"
 description = "Governed natural-language to semantic graph to read-only SQL pilot"
 requires-python = ">=3.11"
 dependencies = ["networkx>=3.6,<4"]
 
 [project.scripts]
-kerala-llm = "kerala_kg_llm.cli:main"
+kerala-llm = "kgraph_llm.cli:main"
 
 [tool.setuptools.packages.find]
-include = ["kerala_kg_llm*"]
+include = ["kgraph_llm*"]
 
 [tool.setuptools.package-data]
-kerala_kg_llm = ["**/*.sql", "ministries/*/README.md", "ministries/README.md"]
+kgraph_llm = ["**/*.sql", "ministries/*/README.md", "ministries/README.md"]

@@ -50,7 +50,7 @@ class NetworkXSemanticGraph:
     def load(cls, path: Path) -> NetworkXSemanticGraph:
         if not path.exists():
             raise RuntimeError(
-                f"NetworkX K-Graph not found at {path}. Run: python -m kerala_kg_llm graph-init"
+                f"NetworkX K-Graph not found at {path}. Run: python -m kgraph_llm graph-init"
             )
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))

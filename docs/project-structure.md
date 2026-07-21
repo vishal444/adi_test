@@ -3,7 +3,7 @@
 The repository is organized around stable platform controls and independently owned ministry modules. Health is the only active pilot. A scaffold folder means a future boundary has been reserved; it does not imply data or analytical support exists.
 
 ```text
-kerala_kg_llm/
+kgraph_llm/
 ├── cli.py
 ├── core/
 │   └── contracts.py               # shared typed request/result contracts
