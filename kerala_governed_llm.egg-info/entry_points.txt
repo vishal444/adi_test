@@ -1,0 +1,2 @@
+[console_scripts]
+kerala-llm = kerala_kg_llm.cli:main
