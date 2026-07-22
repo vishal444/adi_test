@@ -3,6 +3,14 @@ __pycache__/
 .pytest_cache/
 .venv/
 .env
+.env.*
+!.env.example
+*.key
+api_key.txt
+api_keys.json
+google-credentials.json
+service-account*.json
+secrets/
 var/*.db
 var/*.db-*
 var/*.json

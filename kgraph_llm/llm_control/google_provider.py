@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import urllib.error
+import urllib.parse
 import urllib.request
 from typing import Any
 
@@ -10,53 +11,89 @@ from ..core.contracts import GraphContext, QuestionSpec, SemanticQueryPlan
 from .base import LLMAdapter, LLMError
 
 
-class OpenAIResponsesLLM(LLMAdapter):
-    """Optional live adapter using the OpenAI Responses API and JSON-only prompts."""
+class GoogleGeminiLLM(LLMAdapter):
+    """Google Gemini GenerateContent adapter with JSON-only responses."""
 
-    name = "openai-responses"
+    name = "google-gemini"
 
     def __init__(self) -> None:
-        self.api_key = os.environ.get("OPENAI_API_KEY")
+        self.api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get(
+            "GOOGLE_API_KEY"
+        )
         if not self.api_key:
-            raise LLMError("OPENAI_API_KEY is required for --provider openai.")
-        self.model = os.environ.get("OPENAI_MODEL", "gpt-5.6-terra")
-        self.base_url = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1").rstrip("/")
+            raise LLMError(
+                "GEMINI_API_KEY is required for --provider google."
+            )
+        self.model = os.environ.get("GEMINI_MODEL", "gemini-3.5-flash-lite")
+        self.base_url = os.environ.get(
+            "GEMINI_BASE_URL", "https://generativelanguage.googleapis.com/v1beta"
+        ).rstrip("/")
 
     def _request_json(self, instructions: str, input_text: str) -> dict[str, Any]:
+        model = urllib.parse.quote(self.model, safe="-._")
         payload = {
-            "model": self.model,
-            "instructions": instructions,
-            "input": input_text,
-            "reasoning": {"effort": "low"},
+            "system_instruction": {"parts": [{"text": instructions}]},
+            "contents": [
+                {"role": "user", "parts": [{"text": input_text}]}
+            ],
+            "generationConfig": {
+                "responseFormat": {"text": {"mimeType": "APPLICATION_JSON"}}
+            },
         }
         request = urllib.request.Request(
-            f"{self.base_url}/responses",
+            f"{self.base_url}/models/{model}:generateContent",
             data=json.dumps(payload).encode("utf-8"),
             headers={
-                "Authorization": f"Bearer {self.api_key}",
                 "Content-Type": "application/json",
+                "x-goog-api-key": self.api_key,
             },
             method="POST",
         )
         try:
             with urllib.request.urlopen(request, timeout=60) as response:
                 body = json.load(response)
-        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError) as exc:
-            raise LLMError(f"OpenAI request failed: {exc}") from exc
+        except urllib.error.HTTPError as exc:
+            detail = self._http_error_detail(exc)
+            raise LLMError(
+                f"Gemini request failed with HTTP {exc.code}: {detail}"
+            ) from exc
+        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+            raise LLMError(f"Gemini request failed: {exc}") from exc
 
-        text = body.get("output_text")
-        if not text:
-            for item in body.get("output", []):
-                for content in item.get("content", []):
-                    if content.get("type") == "output_text":
-                        text = content.get("text")
-                        break
-        if not text:
-            raise LLMError("The model response did not contain output text.")
         try:
-            return json.loads(text)
+            parts = body["candidates"][0]["content"]["parts"]
+            text = "".join(
+                str(part.get("text", ""))
+                for part in parts
+                if isinstance(part, dict)
+            )
+        except (KeyError, IndexError, TypeError) as exc:
+            raise LLMError("Gemini response did not contain generated text.") from exc
+        if not text.strip():
+            raise LLMError("Gemini response did not contain generated text.")
+        try:
+            result = json.loads(text)
         except json.JSONDecodeError as exc:
-            raise LLMError("The model did not return valid JSON.") from exc
+            raise LLMError("Gemini did not return valid JSON.") from exc
+        if not isinstance(result, dict):
+            raise LLMError("Gemini JSON response must be an object.")
+        return result
+
+    def _http_error_detail(self, error: urllib.error.HTTPError) -> str:
+        """Return a bounded Google error message with the configured key redacted."""
+        detail = str(error.reason or "request rejected")
+        try:
+            payload = json.loads(error.read(8_192).decode("utf-8", errors="replace"))
+            google_error = payload.get("error", {})
+            status = str(google_error.get("status", "")).strip()
+            message = str(google_error.get("message", "")).strip()
+            if message:
+                detail = f"{status}: {message}" if status else message
+        except (AttributeError, json.JSONDecodeError, OSError):
+            pass
+        if self.api_key:
+            detail = detail.replace(self.api_key, "[REDACTED]")
+        return detail[:1_000]
 
     def interpret(self, question: str) -> QuestionSpec:
         data = self._request_json(

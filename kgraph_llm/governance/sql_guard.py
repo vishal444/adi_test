@@ -10,7 +10,7 @@ class UnsafeSQL(ValueError):
 
 
 class SQLGuard:
-    """A deliberately narrow safety gate for model-proposed SQLite queries."""
+    """A deliberately narrow safety gate for compiler-produced SQLite queries."""
 
     FORBIDDEN = re.compile(
         r"\b(insert|update|delete|replace|drop|alter|create|attach|detach|pragma|"

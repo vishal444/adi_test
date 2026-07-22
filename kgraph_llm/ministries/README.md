@@ -1,6 +1,6 @@
 # Ministry modules
 
-Each ministry/domain owns its canonical schema, analytical views, semantic K-Graph registrations, fixtures, and domain-specific methods. Shared infrastructure must not contain ministry business rules.
+Each ministry/domain owns its canonical schema, analytical views, semantic K-Graph registrations, metric formulas, approved join paths, and fixtures. Shared generic query operators must not contain ministry business rules.
 
 ## Required shape for a new active module
 

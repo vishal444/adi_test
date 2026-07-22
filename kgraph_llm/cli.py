@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sqlite3
 from pathlib import Path
 
 from .knowledge_graph import (
@@ -10,9 +11,15 @@ from .knowledge_graph import (
     make_knowledge_graph_from_env,
 )
 from .llm_control import LLMError, make_llm
+from .ministries.health.comprehensive_synthetic import (
+    HIGH_CARDINALITY_TABLES,
+    seed_comprehensive_health_data,
+)
 from .ministries.health.synthetic import seed_synthetic_business_data
+from .ministries.health.surveillance import DailyAdmissionSurveillance
 from .ministries.registry import MINISTRIES, active_graph_definitions
 from .orchestration import GovernedQueryPipeline
+from .semantic_query import OPERATORS, OPERATOR_REGISTRY_VERSION
 from .storage import Database
 
 
@@ -34,16 +41,30 @@ def build_parser() -> argparse.ArgumentParser:
 
     query = subparsers.add_parser("query", help="Run a natural-language query")
     query.add_argument("question")
-    query.add_argument("--provider", choices=("local", "openai"), default="local")
+    query.add_argument(
+        "--provider", choices=("local", "openai", "google", "gemini"), default="local"
+    )
     query.add_argument("--json", action="store_true", help="Print the complete outcome as JSON")
     query.add_argument("--row-limit", type=int, default=100)
 
     subparsers.add_parser("ministries", help="List active and planned ministry modules")
+    subparsers.add_parser("operators", help="List implemented and planned query operators")
     graph_init = subparsers.add_parser(
         "graph-init", help="Build the persisted NetworkX semantic K-Graph"
     )
     graph_init.add_argument("--reset", action="store_true", help="Rebuild the graph file")
     subparsers.add_parser("graph-status", help="Verify and summarize the NetworkX graph file")
+    surveillance = subparsers.add_parser(
+        "daily-surveillance",
+        help="Run the deterministic admission-spike check for one closed reporting day",
+    )
+    surveillance.add_argument(
+        "--reporting-date",
+        help="Closed reporting date in YYYY-MM-DD; defaults to yesterday in Kerala",
+    )
+    surveillance.add_argument(
+        "--json", action="store_true", help="Print the complete outcome as JSON"
+    )
     return parser
 
 
@@ -52,6 +73,15 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "ministries":
         for ministry in MINISTRIES:
             print(f"{ministry.code:16} {ministry.status:12} {ministry.display_name}")
+        return 0
+
+    if args.command == "operators":
+        print(f"Operator registry: {OPERATOR_REGISTRY_VERSION}")
+        for operator in OPERATORS:
+            print(
+                f"{operator.name:24} {operator.category:12} "
+                f"{operator.status:11} {operator.description}"
+            )
         return 0
 
     if args.command in {"graph-init", "graph-status"}:
@@ -88,19 +118,73 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "seed":
-        if args.reset or not database.exists():
-            database.initialize(reset=args.reset)
+        # initialize(reset=False) is also the schema-upgrade path for an older
+        # local demo database; CREATE IF NOT EXISTS preserves existing data.
+        database.initialize(reset=args.reset)
         counts = seed_synthetic_business_data(
             database,
             rows_per_table=args.rows_per_table,
             random_seed=args.random_seed,
         )
+        comprehensive = seed_comprehensive_health_data(
+            database,
+            rows_per_table=args.rows_per_table,
+            random_seed=args.random_seed + 1,
+        )
         print(f"Seeded synthetic database: {database.path}")
         print(f"district: {counts.district}")
+        print(
+            "district_facility_distribution_profile: "
+            f"{counts.district_facility_distribution_profile}"
+        )
+        print(f"healthcare_facility_level: {counts.healthcare_facility_level}")
+        print(f"healthcare_referral_route: {counts.healthcare_referral_route}")
         print(f"hospital: {counts.hospital}")
+        print(
+            "hospital_facility_classification: "
+            f"{counts.hospital_facility_classification}"
+        )
         print(f"hospital_funding: {counts.hospital_funding}")
         print(f"hospital_output: {counts.hospital_output}")
+        print(f"hospital_equipment: {counts.hospital_equipment}")
+        print(
+            "designated_high_cardinality_tables: "
+            f"{len(HIGH_CARDINALITY_TABLES)}"
+        )
+        print(f"empty_tables: {len(comprehensive.empty_tables)}")
+        print(f"all_null_columns: {len(comprehensive.all_null_columns)}")
         return 0
+
+    if args.command == "daily-surveillance":
+        if not database.exists():
+            database.initialize()
+        try:
+            outcome = DailyAdmissionSurveillance(database).run(args.reporting_date)
+        except (sqlite3.Error, ValueError) as exc:
+            print(f"Daily surveillance error: {exc}")
+            return 2
+        if args.json:
+            print(json.dumps(outcome.to_dict(), indent=2, default=str))
+        else:
+            print(f"Run: {outcome.run_id}")
+            print(f"Reporting date: {outcome.reporting_date}")
+            print(f"Status: {outcome.status}")
+            print(
+                "Submission coverage: "
+                f"{outcome.complete_hospitals}/{outcome.expected_hospitals} "
+                f"({outcome.reporting_completeness:.1%})"
+            )
+            print(outcome.message)
+            for signal in outcome.signals:
+                print(
+                    f"{signal.signal_level:5} {signal.geography_type:8} "
+                    f"{signal.geography_name}: {signal.syndrome_code} "
+                    f"observed={signal.observed_count} "
+                    f"expected={signal.expected_count:.2f} "
+                    f"score={signal.anomaly_score:.2f} "
+                    f"hospitals={signal.contributing_hospitals}"
+                )
+        return 0 if outcome.status == "COMPLETED" else 1
 
     if not database.exists():
         database.initialize()
@@ -134,6 +218,20 @@ def main(argv: list[str] | None = None) -> int:
         if outcome.sql:
             print("\nValidated SQL:\n" + outcome.sql.strip())
             print(f"\nRows: {len(outcome.rows)}")
+        if outcome.provenance.get("execution_mode") == "SEMANTIC_PLAN_COMPILED":
+            plan = outcome.provenance["semantic_plan"]
+            print(
+                "Semantic plan: "
+                f"{plan['operation']} / {plan['transform']} "
+                f"({outcome.provenance['compiler_version']})"
+            )
+            print(f"Verification: {outcome.provenance['verification_status']}")
+            print(
+                "Result coverage: "
+                f"{outcome.provenance['returned_rows']}/"
+                f"{outcome.provenance['total_result_rows']}"
+                + (" (truncated)" if outcome.provenance["result_truncated"] else "")
+            )
         print("\nFindings:\n" + outcome.findings)
     return 0 if outcome.status != "STOP" else 1
 

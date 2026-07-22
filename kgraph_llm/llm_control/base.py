@@ -1,9 +1,8 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Any
 
-from ..core.contracts import GraphContext, QuestionSpec, SQLProposal
+from ..core.contracts import GraphContext, QuestionSpec, SemanticQueryPlan
 
 
 class LLMError(RuntimeError):
@@ -11,7 +10,7 @@ class LLMError(RuntimeError):
 
 
 class LLMAdapter(ABC):
-    """Provider-neutral contract for the three bounded LLM stages."""
+    """Provider-neutral contract for interpretation and non-SQL semantic planning."""
 
     name = "abstract"
 
@@ -20,10 +19,6 @@ class LLMAdapter(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def generate_sql(self, spec: QuestionSpec, context: GraphContext) -> SQLProposal:
+    def plan_query(self, spec: QuestionSpec, context: GraphContext) -> SemanticQueryPlan:
+        """Return a constrained semantic plan, never SQL."""
         raise NotImplementedError
-
-    @abstractmethod
-    def analyze(self, spec: QuestionSpec, rows: tuple[dict[str, Any], ...]) -> str:
-        raise NotImplementedError
-

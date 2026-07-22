@@ -20,8 +20,9 @@ Edges have a `relation` property:
 - `HAS_FIELD`: dataset to governed field
 - `DEFINED_ON`: metric to its defining dataset
 - `SEMANTIC_RELATION`: entity-to-entity meaning and governed join guidance
+- `DATASET_JOIN`: approved analytical-view join keys, cardinality, and grain note
 
-The query pipeline traverses aliases and `AVAILABLE_IN` edges to select relevant analytical datasets. It retrieves their fields, metrics, and entity relations before asking the LLM to propose SQL.
+The query pipeline traverses aliases and `AVAILABLE_IN` edges to select relevant analytical datasets. It retrieves fields and semantic roles, metric formulas, entity relations, and applicable `DATASET_JOIN` paths. The LLM returns a constrained semantic plan—not SQL. Relational plans go to the generic SQL compiler. Graph plans execute as bounded shortest-path or neighborhood traversals over an allowlist of semantic edge types and return no SQL.
 
 ## Persistence and commands
 
@@ -40,4 +41,4 @@ Health owns its declaration in `ministries/health/graph_definition.py`. The shar
 
 ## Scope limit
 
-This behaves as a graph for traversal and relationship retrieval, but it is embedded and loaded into one Python process. It does not provide a server, concurrent transactional writes, database-native authorization, or distributed scaling. Those are production migration concerns, not requirements for the local pilot.
+This behaves as a graph for traversal and relationship retrieval, but it is embedded and loaded into one Python process. Traversals are limited by operator-specific depth and result caps. It does not provide a server, concurrent transactional writes, database-native authorization, or distributed scaling. Those are production migration concerns, not requirements for the local pilot.

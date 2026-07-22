@@ -16,3 +16,4 @@ class GraphDefinition:
     relationships: tuple[dict[str, Any], ...]
     aliases: tuple[dict[str, Any], ...]
     dataset_links: tuple[dict[str, Any], ...]
+    dataset_joins: tuple[dict[str, Any], ...] = ()

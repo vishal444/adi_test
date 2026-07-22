@@ -104,15 +104,23 @@ class Database:
         status: str,
         row_count: int,
         provider: str,
+        provenance: dict[str, Any] | None = None,
     ) -> None:
         question_hash = hashlib.sha256(question.encode("utf-8")).hexdigest()
         with sqlite3.connect(self.path) as connection:
+            columns = {
+                row[1] for row in connection.execute("PRAGMA table_info(audit_execution)")
+            }
+            if "provenance_json" not in columns:
+                connection.execute(
+                    "ALTER TABLE audit_execution ADD COLUMN provenance_json TEXT NOT NULL DEFAULT '{}'"
+                )
             connection.execute(
                 """
                 INSERT INTO audit_execution
                     (question_sha256, question_spec_json, generated_sql, status,
-                     row_count, llm_provider)
-                VALUES (?, ?, ?, ?, ?, ?)
+                     row_count, llm_provider, provenance_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     question_hash,
@@ -121,5 +129,6 @@ class Database:
                     status,
                     row_count,
                     provider,
+                    json.dumps(provenance or {}, sort_keys=True),
                 ),
             )

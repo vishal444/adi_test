@@ -31,10 +31,12 @@ MINISTRIES = (
         code="health",
         display_name="Health",
         status="active_pilot",
-        description="Hospital funding and service-output analytical pilot.",
+        description="Kerala facility-centred ministry analytics model with a peripheral governed K-Graph.",
         bootstrap_scripts=(
             HEALTH_ROOT / "sql" / "schema.sql",
+            HEALTH_ROOT / "sql" / "ministry_analytics_schema.sql",
             HEALTH_ROOT / "sql" / "demo_seed.sql",
+            HEALTH_ROOT / "sql" / "ministry_analytics_seed.sql",
         ),
         graph_definition=HEALTH_GRAPH_DEFINITION,
     ),

@@ -8,6 +8,6 @@ CREATE TABLE IF NOT EXISTS audit_execution (
     generated_sql TEXT,
     status TEXT NOT NULL,
     row_count INTEGER NOT NULL,
-    llm_provider TEXT NOT NULL
+    llm_provider TEXT NOT NULL,
+    provenance_json TEXT NOT NULL DEFAULT '{}'
 );
-

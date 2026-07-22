@@ -9,7 +9,12 @@ from typing import Any
 import networkx as nx
 from networkx.readwrite import json_graph
 
-from ..core.contracts import GraphContext, QuestionSpec, SemanticDataset
+from ..core.contracts import (
+    GraphContext,
+    QuestionSpec,
+    SemanticDataset,
+    SemanticQueryPlan,
+)
 from .definition import GraphDefinition
 
 
@@ -24,7 +29,7 @@ def _node_id(kind: str, name: str) -> str:
 class NetworkXSemanticGraph:
     """Embedded property graph with optional JSON persistence."""
 
-    FORMAT_VERSION = 1
+    FORMAT_VERSION = 2
 
     def __init__(
         self,
@@ -198,6 +203,15 @@ class NetworkXSemanticGraph:
                     relation="AVAILABLE_IN",
                 )
 
+            for join in definition.dataset_joins:
+                graph.add_edge(
+                    _node_id("dataset", join["left_dataset"]),
+                    _node_id("dataset", join["right_dataset"]),
+                    relation="DATASET_JOIN",
+                    ministry=ministry,
+                    **join,
+                )
+
         self.graph = graph
 
     def allowed_datasets(self) -> set[str]:
@@ -207,6 +221,228 @@ class NetworkXSemanticGraph:
             if attributes.get("kind") == "SemanticDataset"
             and attributes.get("governed") is True
         }
+
+    def execute_graph_plan(
+        self,
+        plan: SemanticQueryPlan,
+        context: GraphContext,
+        *,
+        row_limit: int,
+    ) -> tuple[dict[str, object], ...]:
+        """Execute a bounded, non-mutating graph path or neighborhood plan."""
+        if plan.operation != "graph":
+            raise ValueError("PLAN_INVALID: graph execution requires operation=graph.")
+        if (
+            plan.datasets
+            or plan.metrics
+            or plan.fields
+            or plan.dimensions
+            or plan.filters
+            or plan.calculations
+            or plan.time_bucket
+            or plan.window_calculations
+            or plan.statistics
+            or plan.data_quality_checks
+            or plan.transform != "none"
+            or plan.comparison
+            or plan.order_by
+            or plan.start_year is not None
+            or plan.end_year is not None
+        ):
+            raise ValueError("PLAN_INVALID: graph plans cannot project relational data.")
+        if plan.result_limit is not None and (
+            not isinstance(plan.result_limit, int)
+            or isinstance(plan.result_limit, bool)
+            or not 1 <= plan.result_limit <= 10_000
+        ):
+            raise ValueError("PLAN_INVALID: graph result_limit must be between 1 and 10000.")
+        query = plan.graph_query
+        operator = str(query.get("operator", ""))
+        if operator not in {"graph_path", "graph_neighborhood"}:
+            raise ValueError("PLAN_INVALID: unsupported graph operator.")
+        direction = str(query.get("direction", "outgoing"))
+        if direction not in {"outgoing", "incoming", "undirected"}:
+            raise ValueError("PLAN_INVALID: graph direction is not allowed.")
+        max_depth = query.get("max_depth", 5 if operator == "graph_path" else 2)
+        depth_limit = 20 if operator == "graph_path" else 5
+        if (
+            not isinstance(max_depth, int)
+            or isinstance(max_depth, bool)
+            or not 1 <= max_depth <= depth_limit
+        ):
+            raise ValueError(
+                f"PLAN_INVALID: graph max_depth must be between 1 and {depth_limit}."
+            )
+        allowed_edges = {
+            "SEMANTIC_RELATION",
+            "AVAILABLE_IN",
+            "DEFINED_ON",
+            "HAS_FIELD",
+            "DATASET_JOIN",
+        }
+        requested_edges = query.get("edge_types") or sorted(allowed_edges)
+        if not isinstance(requested_edges, list) or not requested_edges:
+            raise ValueError("PLAN_INVALID: edge_types must be a non-empty array.")
+        edge_types = {str(value) for value in requested_edges}
+        if not edge_types.issubset(allowed_edges):
+            raise ValueError("PLAN_INVALID: graph plan requested an unapproved edge type.")
+
+        traversal = nx.DiGraph()
+        for source, target, attributes in self.graph.edges(data=True):
+            if attributes.get("relation") not in edge_types:
+                continue
+            traversal.add_edge(source, target)
+        if direction == "incoming":
+            traversal = traversal.reverse(copy=False)
+        elif direction == "undirected":
+            traversal = traversal.to_undirected(as_view=True)
+
+        context_names = self._context_graph_names(context)
+        start = self._resolve_graph_node(
+            str(query.get("start", "")),
+            str(query.get("start_kind", "")),
+            context_names,
+        )
+        if start not in traversal:
+            return ()
+        if operator == "graph_path":
+            end = self._resolve_graph_node(
+                str(query.get("end", "")),
+                str(query.get("end_kind", "")),
+                context_names,
+            )
+            try:
+                path = nx.shortest_path(traversal, start, end)
+            except (nx.NetworkXNoPath, nx.NodeNotFound):
+                return ()
+            if len(path) - 1 > max_depth:
+                return ()
+            raw_rows = [
+                self._graph_edge_row(source, target, step, direction, edge_types)
+                for step, (source, target) in enumerate(zip(path, path[1:]), start=1)
+            ]
+        else:
+            lengths = nx.single_source_shortest_path_length(
+                traversal, start, cutoff=max_depth
+            )
+            node_kinds = query.get("node_kinds") or []
+            if not isinstance(node_kinds, list):
+                raise ValueError("PLAN_INVALID: node_kinds must be an array.")
+            allowed_kinds = {str(value) for value in node_kinds}
+            raw_rows = []
+            for node, distance in lengths.items():
+                if node == start:
+                    continue
+                attributes = self.graph.nodes[node]
+                if allowed_kinds and str(attributes.get("kind", "")) not in allowed_kinds:
+                    continue
+                raw_rows.append(
+                    {
+                        "node_name": self._graph_node_name(node),
+                        "node_kind": str(attributes.get("kind", "Unknown")),
+                        "distance": int(distance),
+                    }
+                )
+            raw_rows.sort(key=lambda row: (int(row["distance"]), str(row["node_kind"]), str(row["node_name"])))
+
+        total = len(raw_rows)
+        semantic_limit = plan.result_limit or row_limit
+        actual_limit = min(row_limit, semantic_limit)
+        if operator == "graph_path" and total > actual_limit:
+            raise ValueError(
+                "GRAPH_RESULT_LIMIT: the complete path exceeds the governed result limit."
+            )
+        return tuple(
+            row | {"_total_rows": total, "_result_rank": rank}
+            for rank, row in enumerate(raw_rows[:actual_limit], start=1)
+        )
+
+    @staticmethod
+    def _context_graph_names(context: GraphContext) -> set[str]:
+        names = set(context.entities)
+        names.update(dataset.name for dataset in context.datasets)
+        names.update(str(metric["name"]) for metric in context.metrics)
+        for relationship in context.relationships:
+            names.add(str(relationship["from_entity"]))
+            names.add(str(relationship["to_entity"]))
+        return names
+
+    def _resolve_graph_node(
+        self, name: str, kind: str, context_names: set[str]
+    ) -> str:
+        if not name:
+            raise ValueError("PLAN_INVALID: graph node name is required.")
+        if name not in context_names:
+            raise ValueError(
+                f"PLAN_INVALID: graph node {name!r} is outside the retrieved graph context."
+            )
+        kind_aliases = {
+            "entity": "SemanticEntity",
+            "dataset": "SemanticDataset",
+            "field": "SemanticField",
+            "metric": "SemanticMetric",
+            "alias": "SemanticAlias",
+            "metadata": "RegistryMetadata",
+        }
+        normalized_kind = kind_aliases.get(kind.casefold(), kind) if kind else ""
+        candidates = []
+        for node_id, attributes in self.graph.nodes(data=True):
+            node_name = str(attributes.get("name", attributes.get("key", "")))
+            if node_name != name:
+                continue
+            if normalized_kind and str(attributes.get("kind", "")) != normalized_kind:
+                continue
+            candidates.append(node_id)
+        if len(candidates) != 1:
+            raise ValueError(
+                f"PLAN_INVALID: graph node {name!r} is absent or ambiguous; provide its exact kind."
+            )
+        return candidates[0]
+
+    def _graph_edge_row(
+        self,
+        traversal_source: str,
+        traversal_target: str,
+        step: int,
+        direction: str,
+        edge_types: set[str],
+    ) -> dict[str, object]:
+        source, target = traversal_source, traversal_target
+        edge_rows = self.graph.get_edge_data(source, target, default={}).values()
+        if direction in {"incoming", "undirected"} and not any(
+            row.get("relation") in edge_types for row in edge_rows
+        ):
+            source, target = target, source
+            edge_rows = self.graph.get_edge_data(source, target, default={}).values()
+        attributes = next(
+            (
+                row
+                for row in sorted(
+                    edge_rows,
+                    key=lambda value: (
+                        str(value.get("relation", "")),
+                        str(value.get("predicate", "")),
+                    ),
+                )
+                if row.get("relation") in edge_types
+            ),
+            None,
+        )
+        if attributes is None:
+            raise ValueError("QUERY_RESULT_INVALID: graph path edge metadata is missing.")
+        return {
+            "step": step,
+            "source_name": self._graph_node_name(source),
+            "source_kind": str(self.graph.nodes[source].get("kind", "Unknown")),
+            "relation": str(attributes.get("predicate", attributes.get("relation", ""))),
+            "target_name": self._graph_node_name(target),
+            "target_kind": str(self.graph.nodes[target].get("kind", "Unknown")),
+            "description": str(attributes.get("description", "")),
+        }
+
+    def _graph_node_name(self, node_id: str) -> str:
+        attributes = self.graph.nodes[node_id]
+        return str(attributes.get("name", attributes.get("key", node_id)))
 
     def retrieve(self, spec: QuestionSpec) -> GraphContext:
         terms = _tokens(spec.original_question)
@@ -230,17 +466,57 @@ class NetworkXSemanticGraph:
                 elif target.get("kind") == "SemanticMetric":
                     metrics.add(str(target["name"]))
         if spec.entity_type:
-            entities.add(spec.entity_type)
+            canonical_entities = [
+                str(attributes["name"])
+                for _, attributes in self.graph.nodes(data=True)
+                if attributes.get("kind") == "SemanticEntity"
+                and str(attributes.get("name", "")).casefold()
+                == spec.entity_type.casefold()
+            ]
+            entities.add(
+                canonical_entities[0]
+                if len(canonical_entities) == 1
+                else spec.entity_type
+            )
+
+        # Include semantic entities on the shortest connecting paths between
+        # explicitly retrieved endpoints so the planner sees the relations it
+        # may request; execution is still bounded and validated separately.
+        if len(entities) >= 2:
+            entity_graph = nx.Graph()
+            for source, target, edge in self.graph.edges(data=True):
+                if edge.get("relation") == "SEMANTIC_RELATION":
+                    entity_graph.add_edge(source, target)
+            selected = sorted(entities)
+            for index, left_name in enumerate(selected):
+                for right_name in selected[index + 1 :]:
+                    try:
+                        path = nx.shortest_path(
+                            entity_graph,
+                            _node_id("entity", left_name),
+                            _node_id("entity", right_name),
+                        )
+                    except (nx.NetworkXNoPath, nx.NodeNotFound):
+                        continue
+                    entities.update(
+                        str(self.graph.nodes[node]["name"])
+                        for node in path
+                        if self.graph.nodes[node].get("kind") == "SemanticEntity"
+                    )
 
         dataset_names: set[str] = set()
-        for name in entities:
-            node_id = _node_id("entity", name)
-            if node_id in self.graph:
-                dataset_names.update(self._available_datasets(node_id))
+        metric_dataset_names: set[str] = set()
         for name in metrics:
             node_id = _node_id("metric", name)
             if node_id in self.graph:
-                dataset_names.update(self._available_datasets(node_id))
+                metric_dataset_names.update(self._available_datasets(node_id))
+        if metric_dataset_names:
+            dataset_names.update(metric_dataset_names)
+        else:
+            for name in entities:
+                node_id = _node_id("entity", name)
+                if node_id in self.graph:
+                    dataset_names.update(self._available_datasets(node_id))
 
         datasets: list[SemanticDataset] = []
         for name in sorted(dataset_names):
@@ -289,6 +565,18 @@ class NetworkXSemanticGraph:
                         "description",
                     )
                 }
+                | {
+                    key: str(attributes[key])
+                    for key in (
+                        "unit",
+                        "additivity",
+                        "entity_key",
+                        "time_field",
+                        "valid_transforms",
+                        "zero_policy",
+                    )
+                    if key in attributes
+                }
             )
 
         relationship_rows: list[dict[str, str]] = []
@@ -312,6 +600,25 @@ class NetworkXSemanticGraph:
             key=lambda row: (row["from_entity"], row["predicate"], row["to_entity"])
         )
 
+        join_rows: list[dict[str, Any]] = []
+        for source, target, edge in self.graph.edges(data=True):
+            if edge.get("relation") != "DATASET_JOIN":
+                continue
+            left_name = str(self.graph.nodes[source]["name"])
+            right_name = str(self.graph.nodes[target]["name"])
+            if left_name not in dataset_names or right_name not in dataset_names:
+                continue
+            join_rows.append(
+                {
+                    "left_dataset": left_name,
+                    "right_dataset": right_name,
+                    "keys": [list(pair) for pair in edge.get("keys", ())],
+                    "cardinality": str(edge.get("cardinality", "")),
+                    "description": str(edge.get("description", "")),
+                }
+            )
+        join_rows.sort(key=lambda row: (row["left_dataset"], row["right_dataset"]))
+
         versions = sorted(
             (
                 str(attributes["key"]),
@@ -326,6 +633,7 @@ class NetworkXSemanticGraph:
             datasets=tuple(datasets),
             metrics=tuple(metric_rows),
             relationships=tuple(relationship_rows),
+            dataset_joins=tuple(join_rows),
             registry_version="+".join(value for _, value in versions),
         )
 

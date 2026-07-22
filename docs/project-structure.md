@@ -16,7 +16,11 @@ kgraph_llm/
 ├── llm_control/
 │   ├── base.py                    # provider-neutral LLM interface
 │   ├── factory.py                 # provider selection
-│   └── openai_provider.py         # optional live provider
+│   ├── google_provider.py         # optional Gemini provider
+│   └── openai_provider.py         # optional OpenAI provider
+├── semantic_query/
+│   ├── compiler.py                # generic plan-to-SQL operators
+│   └── verifier.py                # generic result invariant checks
 ├── governance/
 │   └── sql_guard.py               # deterministic SQL execution policy
 ├── storage/
@@ -43,7 +47,7 @@ kgraph_llm/
 
 1. Ministry modules may depend on `core` and shared platform controls.
 2. Shared controls must not import ministry business logic, except the explicit provider/bootstrap factories that select registered modules.
-3. A ministry owns its canonical tables, analytical views, semantic entities/metrics/relations, fixtures, and deterministic domain methods.
+3. A ministry owns its canonical tables, analytical views, semantic entities, metric formulas, relations, approved join paths, and fixtures—not question-specific SQL.
 4. `knowledge_graph` owns NetworkX persistence/traversal mechanics, not ministry meanings.
 5. `llm_control` owns provider communication and the LLM interface, not Health, Education, or Finance rules.
 6. `governance` remains deterministic and provider-neutral. An LLM cannot disable or weaken its checks.
@@ -55,9 +59,11 @@ kgraph_llm/
 2. Define canonical tables at written natural grains and approved analytical views.
 3. Define semantic entities, fields, metrics, aliases, relationships, and dataset links in `graph_definition.py`.
 4. Add small deterministic fixtures and domain-specific regression tests.
-5. Add applicable method contracts or bounded test methods; unsupported questions must STOP.
+5. Register metric formulas, field roles, grains, and safe dataset joins; add regression fixtures for the generic operators the domain needs.
 6. Complete privacy, purpose, data-contract, and steward review.
 7. Add ordered SQLite bootstrap scripts and the graph definition to `ministries/registry.py`; change status to `active_pilot` only after the preceding checks pass.
+
+See `docs/semantic-query-engine.md` for the shared plan vocabulary and the rule that new analytical coverage must be added as reusable operators rather than question-specific SQL.
 
 ## Future extraction boundaries
 
