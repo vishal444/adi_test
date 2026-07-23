@@ -305,14 +305,16 @@ INSERT OR IGNORE INTO semantic_dimension_definition VALUES
 (1, 'FACILITY', 'Facility', 'master_facility', 'facility_id', 'facility_name', 'INTERNAL', 1),
 (2, 'DISTRICT', 'District', 'master_geographic_area', 'geographic_area_id', 'area_name', 'PUBLIC', 1),
 (3, 'MONTH', 'Month', 'master_calendar', 'month_id', 'month_name', 'PUBLIC', 1),
-(4, 'DEMOGRAPHIC_GROUP', 'Demographic group', 'master_demographic_group', 'demographic_group_id', 'group_name', 'INTERNAL', 1);
+(4, 'DEMOGRAPHIC_GROUP', 'Demographic group', 'master_demographic_group', 'demographic_group_id', 'group_name', 'INTERNAL', 1),
+(5, 'DEPARTMENT', 'Department', 'master_organisation', 'organisation_id', 'organisation_name', 'INTERNAL', 1);
 
 INSERT OR IGNORE INTO semantic_capability VALUES
 (1, 'health.compare_facility_performance', 'Compare facility performance', 'Compare governed resource, service, and finance measures across facilities.', 'facility x month', 'INTERNAL', 85, 'Comparisons require compatible facility types and visible data-quality scores.', 1),
 (2, 'health.detect_medicine_shortages', 'Detect medicine shortages', 'Identify facilities with low aggregate medicine sufficiency or recurring stockouts.', 'facility x month', 'INTERNAL', 90, 'Aggregate values require source-system drill-down to identify a specific medicine.', 1),
 (3, 'health.identify_staffing_gaps', 'Identify staffing gaps', 'Compare required, sanctioned, filled, and actually available staff.', 'facility x staff category x month', 'INTERNAL', 85, 'Required-post norms must be versioned outside the fact table.', 1),
 (4, 'health.analyse_budget_utilisation', 'Analyse budget utilisation', 'Compare available funds, commitments, expenditure, and liabilities.', 'organisation or facility x budget head x month', 'INTERNAL', 90, 'Monthly values do not replace treasury reconciliation.', 1),
-(5, 'health.evaluate_programme_performance', 'Evaluate programme performance', 'Compare population coverage, cost, activities, and outcomes.', 'programme x district x demographic group x month', 'INTERNAL', 85, 'Outcome indicators may not be comparable across programme definitions.', 1);
+(5, 'health.evaluate_programme_performance', 'Evaluate programme performance', 'Compare population coverage, cost, activities, and outcomes.', 'programme x district x demographic group x month', 'INTERNAL', 85, 'Outcome indicators may not be comparable across programme definitions.', 1),
+(6, 'health.department_cross_domain_overview', 'Department cross-domain overview', 'Compare pre-aggregated Health activity, resources, logistics, finance, programme, governance, quality, project, and surveillance measures.', 'department x month', 'INTERNAL', 90, 'Ratios are recomputed before domains are combined; UNASSIGNED must be reviewed through semantic_health_department_attribution_issue before certified use, and drill-down requires the source governed mart.', 1);
 
 INSERT OR IGNORE INTO semantic_capability_input VALUES
 (1, 'DATASET', 'analytics_health_facility_monthly', 1),
@@ -324,7 +326,10 @@ INSERT OR IGNORE INTO semantic_capability_input VALUES
 (4, 'DATASET', 'analytics_health_budget_monthly', 1),
 (4, 'METRIC', 'budget_utilisation_percentage', 1),
 (5, 'DATASET', 'analytics_health_programme_monthly', 1),
-(5, 'DIMENSION', 'demographic_group', 0);
+(5, 'DIMENSION', 'demographic_group', 0),
+(6, 'DATASET', 'analytics_health_department_monthly', 1),
+(6, 'DIMENSION', 'department', 1),
+(6, 'DIMENSION', 'month', 1);
 
 INSERT OR IGNORE INTO semantic_allowed_join VALUES
 ('analytics_health_facility_monthly', 'analytics_health_medicine_monthly', 'facility_id,month_id', 'facility_id,month_id', 'ONE_TO_ONE', 'APPROVED'),

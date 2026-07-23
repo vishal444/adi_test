@@ -1,7 +1,7 @@
 # Kerala Health Department Database and K-Graph Architecture
 
 Status: current implementation  
-Architecture version: `health-ministry-analytics-2026-07-23.1`
+Architecture version: `health-ministry-analytics-2026-07-23.3`
 Last updated: 23 July 2026
 
 ## 1. Purpose
@@ -46,10 +46,10 @@ storage/sql/schema.sql
   -> health/sql/ministry_analytics_seed.sql
 ```
 
-The SQLite database currently contains 70 tables and 17 governed or
-compatibility views after initialization. The health K-Graph definition
-contains 52 semantic entities, 17 datasets, 26 metrics, 130 semantic
-relationships, 112 aliases, 28 dataset links, and 5 approved dataset joins.
+The SQLite database currently contains 70 tables and 19 views, including 18
+governed or compatibility datasets and one attribution diagnostic view. The health K-Graph definition
+contains 52 semantic entities, 18 datasets, 67 metrics, 130 semantic
+relationships, 115 aliases, 29 dataset links, and 5 approved dataset joins.
 
 ## 3. High-level architecture
 
@@ -309,6 +309,23 @@ read arbitrary raw or restricted tables.
 | `analytics_health_programme_monthly` | Programme x District x Demographic Group x Month | Coverage and cost per person reached |
 | `analytics_health_scheme_monthly` | Scheme x District x Demographic Group x Month | Coverage and claim approval |
 | `analytics_health_data_quality_monthly` | Source System x Organisation x Month | Quality score, volume and freshness |
+| `analytics_health_department_monthly` | Department x Month | Cross-domain activity, resources, logistics, finance, programmes, schemes, quality, projects, governance, data quality and surveillance |
+
+The department mart resolves each organisation and facility to its nearest
+`DEPARTMENT` ancestor. Every source domain is aggregated independently to
+Department x Month before it is combined. Counts and money are summed at source
+grain, ratios are recomputed from summed components, and absent domain data is
+kept distinct from a measured zero where the metric requires a denominator.
+This supports department-wide comparisons without joining raw category,
+district, organisation, facility or daily-signal facts together.
+
+Attribution never silently drops a fact. Organisations whose ancestry does not
+reach a `DEPARTMENT`, facilities owned by such organisations, unreconciled
+compatibility hospitals, and non-hospital surveillance geographies contribute
+to the synthetic `department_id = -1`, `department_name = 'UNASSIGNED'` bucket.
+`semantic_health_department_attribution_issue` lists unresolved organisations,
+facilities and hospitals for remediation. A certified department report must
+review that view and explain or eliminate every `UNASSIGNED` contribution.
 
 ### 10.2 Compatibility and surveillance views
 
@@ -519,16 +536,17 @@ flowchart LR
     FY -->|1:1 on hospital_id + fiscal_year| OY
 ```
 
-One-to-many joins are safe only when the category remains in the result grain
+One-to-many facility joins are safe only when the category remains in the result grain
 or the category dataset is aggregated before joining. The cardinality metadata
 exists specifically to prevent silent multiplication of facility totals.
 
-The narrow allow-list is deliberate. Service, infrastructure and vehicle facts
-carry extra service, demographic, infrastructure, station or vehicle
-dimensions and are excluded until a governed pre-aggregation rule preserves
-their grain. Programme and scheme facts are district-grain rather than
-facility-grain, so they are not valid facility-month joins merely because they
-share a month. New joins require explicit grain review and registry approval.
+The detailed join allow-list remains deliberately narrow. Service,
+infrastructure and vehicle facts carry extra dimensions, while programme and
+scheme facts are district-grain rather than facility-grain. They therefore
+remain invalid direct facility-month joins. Cross-domain department queries use
+`analytics_health_department_monthly`, where each domain has already been
+pre-aggregated to the common Department x Month grain. New detailed joins still
+require explicit grain review and registry approval.
 
 ## 16. Governed query execution
 

@@ -510,13 +510,27 @@ class NetworkXSemanticGraph:
             node_id = _node_id("metric", name)
             if node_id in self.graph:
                 metric_dataset_names.update(self._available_datasets(node_id))
-        if metric_dataset_names:
+        entity_dataset_names: set[str] = set()
+        for name in entities:
+            node_id = _node_id("entity", name)
+            if node_id in self.graph:
+                entity_dataset_names.update(self._available_datasets(node_id))
+
+        # A department-wide request needs the complete metric vocabulary of
+        # its pre-aggregated mart instead of a similarly named lower-grain
+        # metric. Other entities retain the narrower legacy retrieval rule.
+        if "Department" in entities:
+            dataset_names.update(entity_dataset_names)
+            metrics = {
+                str(attributes["name"])
+                for _, attributes in self.graph.nodes(data=True)
+                if attributes.get("kind") == "SemanticMetric"
+                and str(attributes.get("dataset_name", "")) in entity_dataset_names
+            }
+        elif metric_dataset_names:
             dataset_names.update(metric_dataset_names)
         else:
-            for name in entities:
-                node_id = _node_id("entity", name)
-                if node_id in self.graph:
-                    dataset_names.update(self._available_datasets(node_id))
+            dataset_names.update(entity_dataset_names)
 
         datasets: list[SemanticDataset] = []
         for name in sorted(dataset_names):
@@ -641,6 +655,6 @@ class NetworkXSemanticGraph:
         return {
             str(self.graph.nodes[target]["name"])
             for _, target, edge in self.graph.out_edges(node_id, data=True)
-            if edge.get("relation") == "AVAILABLE_IN"
+            if edge.get("relation") in {"AVAILABLE_IN", "DEFINED_ON"}
             and self.graph.nodes[target].get("kind") == "SemanticDataset"
         }

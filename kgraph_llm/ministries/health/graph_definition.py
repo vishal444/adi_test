@@ -40,7 +40,7 @@ _DISTRICT_PYRAMID_LEVELS = (
 
 GRAPH_DEFINITION = GraphDefinition(
     ministry="health",
-    registry_version="health-ministry-analytics-2026-07-23.1",
+    registry_version="health-ministry-analytics-2026-07-23.3",
     entities=(
         {"name": "FiscalYear", "description": "Government fiscal reporting period."},
         {"name": "Equipment", "description": "Medical equipment asset assigned to a hospital."},

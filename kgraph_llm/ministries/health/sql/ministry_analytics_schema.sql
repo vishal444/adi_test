@@ -987,10 +987,11 @@ CREATE TABLE IF NOT EXISTS semantic_capability_input (
     PRIMARY KEY (capability_id, input_type, input_name)
 );
 
--- This registry is intentionally allow-list based. Category-grain datasets
--- are omitted unless the compiler can preserve or pre-aggregate every
--- additional dimension; district-grain programme/scheme facts are not
--- facility-grain joins.
+-- Detailed joins remain allow-list based. Category-grain datasets are omitted
+-- unless the compiler can preserve or pre-aggregate every added dimension;
+-- district-grain programme/scheme facts are not facility-grain joins.
+-- Department-wide cross-domain work uses the separately governed Department x
+-- Month mart, whose source domains are pre-aggregated before combination.
 CREATE TABLE IF NOT EXISTS semantic_allowed_join (
     left_dataset TEXT NOT NULL,
     right_dataset TEXT NOT NULL,
@@ -1246,3 +1247,484 @@ FROM analytics_data_quality_monthly AS q
 JOIN master_source_system AS source ON source.source_system_id = q.source_system_id
 JOIN master_organisation AS organisation
   ON organisation.organisation_id = q.organisation_id;
+
+-- Department-wide cross-domain mart ----------------------------------------
+--
+-- Every source is aggregated independently to Department x Month before the
+-- final joins. This is the only approved way to combine category-, facility-,
+-- organisation-, programme-, scheme-, and daily-surveillance grains without
+-- multiplying measures.
+
+DROP VIEW IF EXISTS semantic_health_department_attribution_issue;
+CREATE VIEW semantic_health_department_attribution_issue AS
+WITH RECURSIVE
+organisation_ancestry (
+    organisation_id, ancestor_id, parent_organisation_id,
+    ancestor_type, depth
+) AS (
+    SELECT organisation_id,
+           organisation_id,
+           parent_organisation_id,
+           organisation_type,
+           0
+    FROM master_organisation
+    UNION ALL
+    SELECT ancestry.organisation_id,
+           parent.organisation_id,
+           parent.parent_organisation_id,
+           parent.organisation_type,
+           ancestry.depth + 1
+    FROM organisation_ancestry AS ancestry
+    JOIN master_organisation AS parent
+      ON parent.organisation_id = ancestry.parent_organisation_id
+    WHERE ancestry.depth < 20
+),
+resolved_organisation AS (
+    SELECT DISTINCT organisation_id
+    FROM organisation_ancestry
+    WHERE ancestor_type = 'DEPARTMENT'
+)
+SELECT 'ORGANISATION' AS entity_type,
+       organisation.organisation_id AS entity_id,
+       organisation.organisation_name AS entity_name,
+       'NO_DEPARTMENT_ANCESTOR' AS issue_code
+FROM master_organisation AS organisation
+LEFT JOIN resolved_organisation AS resolved
+  ON resolved.organisation_id = organisation.organisation_id
+WHERE resolved.organisation_id IS NULL
+  AND organisation.organisation_type <> 'GOVERNMENT'
+UNION ALL
+SELECT 'FACILITY',
+       facility.facility_id,
+       facility.facility_name,
+       'PARENT_ORGANISATION_HAS_NO_DEPARTMENT'
+FROM master_facility AS facility
+LEFT JOIN resolved_organisation AS resolved
+  ON resolved.organisation_id = facility.parent_organisation_id
+WHERE resolved.organisation_id IS NULL
+UNION ALL
+SELECT 'HOSPITAL',
+       hospital.hospital_id,
+       hospital.hospital_name,
+       CASE
+           WHEN hospital.master_facility_id IS NULL
+           THEN 'MASTER_FACILITY_NOT_RECONCILED'
+           ELSE 'MASTER_FACILITY_NOT_FOUND'
+       END
+FROM hospital
+LEFT JOIN master_facility AS facility
+  ON facility.facility_id = hospital.master_facility_id
+WHERE hospital.master_facility_id IS NULL
+   OR facility.facility_id IS NULL;
+
+DROP VIEW IF EXISTS analytics_health_department_monthly;
+CREATE VIEW analytics_health_department_monthly AS
+WITH RECURSIVE
+organisation_ancestry (
+    organisation_id, ancestor_id, parent_organisation_id,
+    ancestor_type, ancestor_name, depth
+) AS (
+    SELECT organisation_id,
+           organisation_id,
+           parent_organisation_id,
+           organisation_type,
+           organisation_name,
+           0
+    FROM master_organisation
+    UNION ALL
+    SELECT ancestry.organisation_id,
+           parent.organisation_id,
+           parent.parent_organisation_id,
+           parent.organisation_type,
+           parent.organisation_name,
+           ancestry.depth + 1
+    FROM organisation_ancestry AS ancestry
+    JOIN master_organisation AS parent
+      ON parent.organisation_id = ancestry.parent_organisation_id
+    WHERE ancestry.depth < 20
+),
+resolved_department_map AS (
+    SELECT ancestry.organisation_id,
+           ancestry.ancestor_id AS department_id,
+           ancestry.ancestor_name AS department_name
+    FROM organisation_ancestry AS ancestry
+    WHERE ancestry.ancestor_type = 'DEPARTMENT'
+      AND ancestry.depth = (
+          SELECT MIN(candidate.depth)
+          FROM organisation_ancestry AS candidate
+          WHERE candidate.organisation_id = ancestry.organisation_id
+            AND candidate.ancestor_type = 'DEPARTMENT'
+      )
+),
+department_map AS (
+    SELECT organisation.organisation_id,
+           COALESCE(resolved.department_id, -1) AS department_id,
+           COALESCE(resolved.department_name, 'UNASSIGNED') AS department_name
+    FROM master_organisation AS organisation
+    LEFT JOIN resolved_department_map AS resolved
+      ON resolved.organisation_id = organisation.organisation_id
+),
+facility_department AS (
+    SELECT facility.facility_id,
+           department.department_id,
+           department.department_name
+    FROM master_facility AS facility
+    JOIN department_map AS department
+      ON department.organisation_id = facility.parent_organisation_id
+),
+department_month AS (
+    SELECT organisation.organisation_id AS department_id,
+           organisation.organisation_name AS department_name,
+           calendar.month_id
+    FROM master_organisation AS organisation
+    CROSS JOIN master_calendar AS calendar
+    WHERE organisation.organisation_type = 'DEPARTMENT'
+      AND organisation.active = 1
+    UNION ALL
+    SELECT -1,
+           'UNASSIGNED',
+           calendar.month_id
+    FROM master_calendar AS calendar
+),
+facility_activity AS (
+    SELECT department.department_id,
+           fact.month_id,
+           COUNT(DISTINCT fact.facility_id) AS reporting_facility_count,
+           SUM(fact.outpatient_visits) AS outpatient_visits,
+           SUM(fact.inpatient_admissions) AS inpatient_admissions,
+           SUM(fact.emergency_visits) AS emergency_visits,
+           SUM(fact.occupied_bed_days) AS occupied_bed_days,
+           SUM(fact.available_bed_days) AS available_bed_days
+    FROM analytics_facility_monthly_summary AS fact
+    JOIN facility_department AS department
+      ON department.facility_id = fact.facility_id
+    GROUP BY department.department_id, fact.month_id
+),
+medicine AS (
+    SELECT department.department_id,
+           fact.month_id,
+           SUM(fact.available_stock_value) AS available_stock_value,
+           SUM(fact.estimated_required_stock_value) AS required_stock_value,
+           SUM(fact.critical_stockout_incidents) AS critical_stockout_incidents
+    FROM analytics_medicine_monthly AS fact
+    JOIN facility_department AS department
+      ON department.facility_id = fact.facility_id
+    GROUP BY department.department_id, fact.month_id
+),
+equipment AS (
+    SELECT department.department_id,
+           fact.month_id,
+           SUM(fact.equipment_available_count) AS equipment_available_count,
+           SUM(fact.equipment_functional_count) AS equipment_functional_count,
+           SUM(fact.total_downtime_hours) AS equipment_downtime_hours
+    FROM analytics_equipment_monthly AS fact
+    JOIN facility_department AS department
+      ON department.facility_id = fact.facility_id
+    GROUP BY department.department_id, fact.month_id
+),
+staffing AS (
+    SELECT department.department_id,
+           fact.month_id,
+           SUM(fact.required_posts) AS required_posts,
+           SUM(fact.staff_actually_available) AS staff_available,
+           SUM(fact.salary_cost + fact.contract_staff_cost + fact.overtime_cost)
+               AS workforce_cost
+    FROM analytics_staffing_monthly AS fact
+    JOIN facility_department AS department
+      ON department.facility_id = fact.facility_id
+    GROUP BY department.department_id, fact.month_id
+),
+service AS (
+    SELECT department.department_id,
+           fact.month_id,
+           SUM(fact.service_demand) AS service_demand,
+           SUM(fact.services_delivered) AS services_delivered,
+           SUM(fact.estimated_unmet_demand) AS unmet_service_demand
+    FROM analytics_service_monthly AS fact
+    JOIN facility_department AS department
+      ON department.facility_id = fact.facility_id
+    GROUP BY department.department_id, fact.month_id
+),
+infrastructure AS (
+    SELECT department.department_id,
+           fact.month_id,
+           SUM(fact.critical_issues) AS infrastructure_critical_issues,
+           SUM(fact.downtime_hours) AS infrastructure_downtime_hours,
+           SUM(fact.maintenance_cost + fact.repair_cost + fact.capital_expenditure)
+               AS infrastructure_cost
+    FROM analytics_infrastructure_monthly AS fact
+    JOIN facility_department AS department
+      ON department.facility_id = fact.facility_id
+    GROUP BY department.department_id, fact.month_id
+),
+vehicle AS (
+    SELECT department.department_id,
+           fact.month_id,
+           SUM(fact.available_vehicle_count) AS available_vehicle_count,
+           SUM(fact.functional_vehicle_count) AS functional_vehicle_count,
+           SUM(fact.emergency_trip_count) AS emergency_trip_count,
+           SUM(fact.patients_transported) AS patients_transported
+    FROM analytics_vehicle_monthly AS fact
+    JOIN facility_department AS department
+      ON department.facility_id = fact.facility_id
+    GROUP BY department.department_id, fact.month_id
+),
+procurement AS (
+    SELECT department.department_id,
+           fact.month_id,
+           SUM(fact.requested_value) AS procurement_requested_value,
+           SUM(fact.received_value) AS procurement_received_value,
+           SUM(fact.paid_value) AS procurement_paid_value
+    FROM analytics_procurement_monthly AS fact
+    JOIN department_map AS department
+      ON department.organisation_id = fact.procuring_organisation_id
+    GROUP BY department.department_id, fact.month_id
+),
+budget AS (
+    SELECT department.department_id,
+           fact.month_id,
+           SUM(fact.funds_available) AS funds_available,
+           SUM(fact.actual_expenditure) AS budget_actual_expenditure
+    FROM finance_budget_monthly AS fact
+    JOIN department_map AS department
+      ON department.organisation_id = fact.organisation_id
+    GROUP BY department.department_id, fact.month_id
+),
+programme AS (
+    SELECT department.department_id,
+           fact.month_id,
+           SUM(fact.eligible_population) AS programme_eligible_population,
+           SUM(fact.population_reached) AS programme_population_reached,
+           SUM(fact.programme_expenditure) AS programme_expenditure
+    FROM analytics_programme_monthly AS fact
+    JOIN master_programme AS programme
+      ON programme.programme_id = fact.programme_id
+    JOIN department_map AS department
+      ON department.organisation_id = programme.administering_organisation_id
+    GROUP BY department.department_id, fact.month_id
+),
+scheme AS (
+    SELECT department.department_id,
+           fact.month_id,
+           SUM(fact.eligible_individuals) AS scheme_eligible_individuals,
+           SUM(fact.enrolled_individuals) AS scheme_enrolled_individuals,
+           SUM(fact.beneficiaries_served) AS scheme_beneficiaries_served,
+           SUM(fact.claims_submitted) AS claims_submitted,
+           SUM(fact.claims_approved) AS claims_approved,
+           SUM(fact.claim_amount_paid) AS claim_amount_paid
+    FROM analytics_scheme_monthly AS fact
+    JOIN master_scheme AS scheme
+      ON scheme.scheme_id = fact.scheme_id
+    JOIN department_map AS department
+      ON department.organisation_id = scheme.administering_organisation_id
+    GROUP BY department.department_id, fact.month_id
+),
+quality AS (
+    SELECT department.department_id,
+           fact.month_id,
+           AVG(fact.quality_score) AS average_quality_score,
+           SUM(fact.critical_issues) AS quality_critical_issues
+    FROM analytics_quality_monthly AS fact
+    JOIN facility_department AS department
+      ON department.facility_id = fact.facility_id
+    GROUP BY department.department_id, fact.month_id
+),
+project AS (
+    SELECT department.department_id,
+           fact.month_id,
+           SUM(fact.amount_spent) AS project_amount_spent,
+           SUM(fact.outstanding_liability) AS project_outstanding_liability
+    FROM analytics_project_monthly AS fact
+    JOIN master_project AS project ON project.project_id = fact.project_id
+    JOIN department_map AS department
+      ON department.organisation_id = project.responsible_organisation_id
+    GROUP BY department.department_id, fact.month_id
+),
+finance_expenditure AS (
+    SELECT department.department_id,
+           fact.month_id,
+           SUM(fact.expenditure_amount) AS classified_expenditure
+    FROM finance_expenditure_monthly AS fact
+    JOIN facility_department AS department
+      ON department.facility_id = fact.facility_id
+    GROUP BY department.department_id, fact.month_id
+),
+liability AS (
+    SELECT department.department_id,
+           fact.month_id,
+           SUM(fact.closing_liability) AS closing_liability,
+           SUM(fact.overdue_liability) AS overdue_liability
+    FROM finance_liability_monthly AS fact
+    JOIN department_map AS department
+      ON department.organisation_id = fact.organisation_id
+    GROUP BY department.department_id, fact.month_id
+),
+data_quality AS (
+    SELECT department.department_id,
+           fact.month_id,
+           AVG(fact.overall_data_quality_score) AS average_data_quality_score
+    FROM analytics_data_quality_monthly AS fact
+    JOIN department_map AS department
+      ON department.organisation_id = fact.organisation_id
+    GROUP BY department.department_id, fact.month_id
+),
+audit AS (
+    SELECT department.department_id,
+           substr(fact.issue_date, 1, 7) || '-01' AS month_id,
+           SUM(CASE WHEN fact.resolution_status IN ('OPEN', 'IN_PROGRESS')
+                    THEN 1 ELSE 0 END) AS open_audit_issue_count
+    FROM analytics_audit_issue AS fact
+    JOIN department_map AS department
+      ON department.organisation_id = fact.responsible_organisation_id
+    GROUP BY department.department_id, substr(fact.issue_date, 1, 7)
+),
+surveillance AS (
+    SELECT COALESCE(department.department_id, -1) AS department_id,
+           substr(signal.reporting_date, 1, 7) || '-01' AS month_id,
+           COUNT(*) AS surveillance_signal_count
+    FROM health_surveillance_signal AS signal
+    LEFT JOIN hospital
+      ON signal.geography_type = 'HOSPITAL'
+     AND hospital.hospital_id = signal.geography_id
+    LEFT JOIN facility_department AS department
+      ON department.facility_id = hospital.master_facility_id
+    GROUP BY COALESCE(department.department_id, -1),
+             substr(signal.reporting_date, 1, 7)
+)
+SELECT month.department_id,
+       month.department_name,
+       CASE WHEN month.department_id = -1
+            THEN 'UNASSIGNED' ELSE 'ASSIGNED' END AS attribution_status,
+       month.month_id,
+       COALESCE(activity.reporting_facility_count, 0) AS reporting_facility_count,
+       COALESCE(activity.outpatient_visits, 0) AS outpatient_visits,
+       COALESCE(activity.inpatient_admissions, 0) AS inpatient_admissions,
+       COALESCE(activity.emergency_visits, 0) AS emergency_visits,
+       CASE WHEN COALESCE(activity.available_bed_days, 0) = 0 THEN NULL
+            ELSE 100.0 * activity.occupied_bed_days / activity.available_bed_days
+       END AS bed_occupancy_percentage,
+       CASE WHEN COALESCE(medicine.required_stock_value, 0) = 0 THEN NULL
+            ELSE 100.0 * medicine.available_stock_value / medicine.required_stock_value
+       END AS medicine_sufficiency_percentage,
+       COALESCE(medicine.critical_stockout_incidents, 0)
+           AS critical_stockout_incidents,
+       CASE WHEN COALESCE(equipment.equipment_available_count, 0) = 0 THEN NULL
+            ELSE 100.0 * equipment.equipment_functional_count
+                 / equipment.equipment_available_count
+       END AS equipment_functionality_percentage,
+       COALESCE(equipment.equipment_downtime_hours, 0)
+           AS equipment_downtime_hours,
+       CASE WHEN COALESCE(staffing.required_posts, 0) = 0 THEN NULL
+            ELSE 100.0 * staffing.staff_available / staffing.required_posts
+       END AS staffing_sufficiency_percentage,
+       COALESCE(staffing.workforce_cost, 0) AS workforce_cost,
+       COALESCE(service.service_demand, 0) AS service_demand,
+       COALESCE(service.services_delivered, 0) AS services_delivered,
+       COALESCE(service.unmet_service_demand, 0) AS unmet_service_demand,
+       COALESCE(infrastructure.infrastructure_critical_issues, 0)
+           AS infrastructure_critical_issues,
+       COALESCE(infrastructure.infrastructure_downtime_hours, 0)
+           AS infrastructure_downtime_hours,
+       COALESCE(infrastructure.infrastructure_cost, 0) AS infrastructure_cost,
+       CASE WHEN COALESCE(vehicle.available_vehicle_count, 0) = 0 THEN NULL
+            ELSE 100.0 * vehicle.functional_vehicle_count
+                 / vehicle.available_vehicle_count
+       END AS vehicle_functionality_percentage,
+       COALESCE(vehicle.emergency_trip_count, 0) AS emergency_trip_count,
+       COALESCE(vehicle.patients_transported, 0) AS patients_transported,
+       COALESCE(procurement.procurement_requested_value, 0)
+           AS procurement_requested_value,
+       COALESCE(procurement.procurement_received_value, 0)
+           AS procurement_received_value,
+       COALESCE(procurement.procurement_paid_value, 0)
+           AS procurement_paid_value,
+       COALESCE(budget.funds_available, 0) AS funds_available,
+       COALESCE(budget.budget_actual_expenditure, 0) AS budget_actual_expenditure,
+       CASE WHEN COALESCE(budget.funds_available, 0) = 0 THEN NULL
+            ELSE 100.0 * budget.budget_actual_expenditure / budget.funds_available
+       END AS budget_utilisation_percentage,
+       COALESCE(programme.programme_population_reached, 0)
+           AS programme_population_reached,
+       COALESCE(programme.programme_expenditure, 0) AS programme_expenditure,
+       CASE WHEN COALESCE(programme.programme_eligible_population, 0) = 0 THEN NULL
+            ELSE 100.0 * programme.programme_population_reached
+                 / programme.programme_eligible_population
+       END AS programme_coverage_percentage,
+       COALESCE(scheme.scheme_beneficiaries_served, 0)
+           AS scheme_beneficiaries_served,
+       COALESCE(scheme.claim_amount_paid, 0) AS claim_amount_paid,
+       CASE WHEN COALESCE(scheme.scheme_eligible_individuals, 0) = 0 THEN NULL
+            ELSE 100.0 * scheme.scheme_enrolled_individuals
+                 / scheme.scheme_eligible_individuals
+       END AS scheme_coverage_percentage,
+       CASE WHEN COALESCE(scheme.claims_submitted, 0) = 0 THEN NULL
+            ELSE 100.0 * scheme.claims_approved / scheme.claims_submitted
+       END AS claim_approval_percentage,
+       quality.average_quality_score,
+       COALESCE(quality.quality_critical_issues, 0) AS quality_critical_issues,
+       COALESCE(project.project_amount_spent, 0) AS project_amount_spent,
+       COALESCE(project.project_outstanding_liability, 0)
+           AS project_outstanding_liability,
+       COALESCE(finance_expenditure.classified_expenditure, 0)
+           AS classified_expenditure,
+       COALESCE(liability.closing_liability, 0) AS closing_liability,
+       COALESCE(liability.overdue_liability, 0) AS overdue_liability,
+       data_quality.average_data_quality_score,
+       COALESCE(audit.open_audit_issue_count, 0) AS open_audit_issue_count,
+       COALESCE(surveillance.surveillance_signal_count, 0)
+           AS surveillance_signal_count
+FROM department_month AS month
+LEFT JOIN facility_activity AS activity
+  ON activity.department_id = month.department_id
+ AND activity.month_id = month.month_id
+LEFT JOIN medicine
+  ON medicine.department_id = month.department_id
+ AND medicine.month_id = month.month_id
+LEFT JOIN equipment
+  ON equipment.department_id = month.department_id
+ AND equipment.month_id = month.month_id
+LEFT JOIN staffing
+  ON staffing.department_id = month.department_id
+ AND staffing.month_id = month.month_id
+LEFT JOIN service
+  ON service.department_id = month.department_id
+ AND service.month_id = month.month_id
+LEFT JOIN infrastructure
+  ON infrastructure.department_id = month.department_id
+ AND infrastructure.month_id = month.month_id
+LEFT JOIN vehicle
+  ON vehicle.department_id = month.department_id
+ AND vehicle.month_id = month.month_id
+LEFT JOIN procurement
+  ON procurement.department_id = month.department_id
+ AND procurement.month_id = month.month_id
+LEFT JOIN budget
+  ON budget.department_id = month.department_id
+ AND budget.month_id = month.month_id
+LEFT JOIN programme
+  ON programme.department_id = month.department_id
+ AND programme.month_id = month.month_id
+LEFT JOIN scheme
+  ON scheme.department_id = month.department_id
+ AND scheme.month_id = month.month_id
+LEFT JOIN quality
+  ON quality.department_id = month.department_id
+ AND quality.month_id = month.month_id
+LEFT JOIN project
+  ON project.department_id = month.department_id
+ AND project.month_id = month.month_id
+LEFT JOIN finance_expenditure
+  ON finance_expenditure.department_id = month.department_id
+ AND finance_expenditure.month_id = month.month_id
+LEFT JOIN liability
+  ON liability.department_id = month.department_id
+ AND liability.month_id = month.month_id
+LEFT JOIN data_quality
+  ON data_quality.department_id = month.department_id
+ AND data_quality.month_id = month.month_id
+LEFT JOIN audit
+  ON audit.department_id = month.department_id
+ AND audit.month_id = month.month_id
+LEFT JOIN surveillance
+  ON surveillance.department_id = month.department_id
+ AND surveillance.month_id = month.month_id;

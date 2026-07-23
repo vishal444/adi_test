@@ -1,7 +1,7 @@
 # Kerala health ministry analytics data model
 
 Status: implementation baseline  
-Registry version: `health-ministry-analytics-2026-07-23.1`
+Registry version: `health-ministry-analytics-2026-07-23.3`
 
 ## Scope
 
@@ -105,11 +105,25 @@ and purpose-limited access policies. Joins from a facility-month dataset to a
 category-grain dataset are declared one-to-many so a compiler cannot silently
 multiply facility totals.
 
-The join registry is intentionally narrow: extra category/station/demographic
-dimensions require governed pre-aggregation, while programme and scheme facts
-are district-month rather than facility-month facts. Access-policy role names
-refer to the external deployment IAM; the analytical database does not own a
-duplicate role directory.
+The detailed join registry is intentionally narrow: extra
+category/station/demographic dimensions require governed pre-aggregation,
+while programme and scheme facts are district-month rather than
+facility-month facts. Department-wide cross-domain questions use
+`analytics_health_department_monthly`, which attributes each record through
+the organisation hierarchy and independently pre-aggregates every domain to
+Department x Month before combining them. It covers activity, medicines,
+equipment, staffing, services, infrastructure, vehicles, procurement, budget,
+programmes, schemes, quality, projects, expenditure, liabilities, audit, data
+quality and mapped surveillance signals without fact fan-out. Access-policy
+role names refer to the external deployment IAM; the analytical database does
+not own a duplicate role directory.
+
+Attribution failures are not discarded. Facts whose organisation chain does
+not reach a `DEPARTMENT`, plus surveillance signals without a reconciled
+hospital-to-facility path, roll into `department_id = -1` (`UNASSIGNED`).
+`semantic_health_department_attribution_issue` identifies unresolved
+organisations, facilities and compatibility hospitals. This diagnostic and the
+`UNASSIGNED` row must be reviewed before department-wide output is certified.
 
 ## Peripheral K-Graph
 

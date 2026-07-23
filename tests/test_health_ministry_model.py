@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from kgraph_llm.core import QuestionSpec, SemanticQueryPlan
 from kgraph_llm.knowledge_graph import NetworkXSemanticGraph
 from kgraph_llm.ministries.health.comprehensive_synthetic import (
     HIGH_CARDINALITY_TABLES,
@@ -16,6 +17,7 @@ from kgraph_llm.ministries.health.ministry_graph import (
 )
 from kgraph_llm.ministries.health.synthetic import seed_synthetic_business_data
 from kgraph_llm.ministries.registry import active_graph_definitions
+from kgraph_llm.semantic_query import SemanticQueryCompiler
 from kgraph_llm.storage import Database
 
 
@@ -282,6 +284,159 @@ class HealthMinistryModelTest(unittest.TestCase):
         self.assertEqual(capability[0], 90.0)
         self.assertIn("drill-down", capability[1])
         self.assertEqual(join, ("ONE_TO_MANY_BY_CATEGORY", "APPROVED"))
+
+    def test_department_month_mart_combines_health_domains_without_fanout(self) -> None:
+        with sqlite3.connect(self.database.path) as connection:
+            connection.row_factory = sqlite3.Row
+            row = connection.execute(
+                """
+                SELECT reporting_facility_count,
+                       outpatient_visits,
+                       medicine_sufficiency_percentage,
+                       staffing_sufficiency_percentage,
+                       services_delivered,
+                       budget_utilisation_percentage,
+                       programme_coverage_percentage,
+                       scheme_beneficiaries_served,
+                       project_amount_spent,
+                       average_data_quality_score
+                FROM analytics_health_department_monthly
+                WHERE department_id = 10
+                  AND month_id = '2026-06-01'
+                """
+            ).fetchone()
+            capability = connection.execute(
+                """
+                SELECT output_grain, minimum_data_quality_score
+                FROM semantic_capability
+                WHERE capability_code = 'health.department_cross_domain_overview'
+                """
+            ).fetchone()
+
+        self.assertEqual(row["reporting_facility_count"], 3)
+        self.assertEqual(row["outpatient_visits"], 37_370)
+        self.assertAlmostEqual(row["medicine_sufficiency_percentage"], 77.6978, places=4)
+        self.assertAlmostEqual(row["staffing_sufficiency_percentage"], 77.9630, places=4)
+        self.assertEqual(row["services_delivered"], 3_040)
+        self.assertAlmostEqual(row["budget_utilisation_percentage"], 85.0241, places=4)
+        self.assertAlmostEqual(row["programme_coverage_percentage"], 77.3475, places=4)
+        self.assertEqual(row["scheme_beneficiaries_served"], 12_800)
+        self.assertEqual(row["project_amount_spent"], 14_500_000)
+        self.assertAlmostEqual(row["average_data_quality_score"], 96.8, places=4)
+        self.assertEqual(tuple(capability), ("department x month", 90.0))
+
+    def test_unattributed_facility_data_is_surfaced_not_dropped(self) -> None:
+        with sqlite3.connect(self.database.path) as connection:
+            baseline_issues = connection.execute(
+                "SELECT COUNT(*) FROM semantic_health_department_attribution_issue"
+            ).fetchone()[0]
+            facility_visits = connection.execute(
+                """
+                SELECT outpatient_visits
+                FROM analytics_facility_monthly_summary
+                WHERE facility_id = 1 AND month_id = '2026-06-01'
+                """
+            ).fetchone()[0]
+            connection.execute(
+                """
+                INSERT INTO master_organisation
+                    (organisation_id, organisation_code, organisation_name,
+                     organisation_type, parent_organisation_id,
+                     administrative_level, system_of_medicine_id, district_id,
+                     effective_from, effective_to, active)
+                VALUES
+                    (9001, 'ORPHAN-TEST', 'Orphan Test Organisation', 'OTHER',
+                     NULL, 'STATE', 1, NULL, '2026-01-01', NULL, 1)
+                """
+            )
+            connection.execute(
+                """
+                UPDATE master_facility
+                SET parent_organisation_id = 9001
+                WHERE facility_id = 1
+                """
+            )
+            issue_rows = connection.execute(
+                """
+                SELECT entity_type, entity_id, issue_code
+                FROM semantic_health_department_attribution_issue
+                ORDER BY entity_type, entity_id
+                """
+            ).fetchall()
+            unassigned = connection.execute(
+                """
+                SELECT attribution_status, outpatient_visits
+                FROM analytics_health_department_monthly
+                WHERE department_id = -1 AND month_id = '2026-06-01'
+                """
+            ).fetchone()
+
+        self.assertEqual(baseline_issues, 0)
+        self.assertIn(
+            ("ORGANISATION", 9001, "NO_DEPARTMENT_ANCESTOR"), issue_rows
+        )
+        self.assertIn(
+            (
+                "FACILITY",
+                1,
+                "PARENT_ORGANISATION_HAS_NO_DEPARTMENT",
+            ),
+            issue_rows,
+        )
+        self.assertEqual(unassigned, ("UNASSIGNED", facility_visits))
+
+    def test_department_context_and_compiler_support_cross_domain_metrics(self) -> None:
+        graph = NetworkXSemanticGraph.from_definitions(active_graph_definitions())
+        context = graph.retrieve(
+            QuestionSpec(
+                original_question=(
+                    "Compare department-wide medicine sufficiency, outpatient "
+                    "activity, budget expenditure, and programme coverage"
+                ),
+                entity_type="Department",
+                metric_terms=("medicine_sufficiency_percentage",),
+            )
+        )
+        dataset_names = {dataset.name for dataset in context.datasets}
+        metric_names = {metric["name"] for metric in context.metrics}
+
+        self.assertIn("analytics_health_department_monthly", dataset_names)
+        self.assertTrue(
+            {
+                "department_outpatient_visits",
+                "department_medicine_sufficiency_percentage",
+                "department_budget_expenditure",
+                "department_programme_coverage_percentage",
+            }.issubset(metric_names)
+        )
+
+        plan = SemanticQueryPlan(
+            operation="aggregate",
+            datasets=("analytics_health_department_monthly",),
+            dimensions=("department_id", "department_name", "month_id"),
+            metrics=(
+                "department_outpatient_visits",
+                "department_medicine_sufficiency_percentage",
+                "department_budget_expenditure",
+                "department_programme_coverage_percentage",
+            ),
+            filters=(
+                {
+                    "field": "month_id",
+                    "operator": "=",
+                    "value": "2026-06-01",
+                },
+            ),
+        )
+        compiled = SemanticQueryCompiler().compile(plan, context)
+        with sqlite3.connect(self.database.path) as connection:
+            result = connection.execute(
+                compiled.proposal.sql, compiled.proposal.parameters
+            ).fetchone()
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result[0], 10)
+        self.assertEqual(result[3], 37_370)
 
     def test_peripheral_graph_contains_structure_not_restricted_people(self) -> None:
         graph = NetworkXSemanticGraph.from_definitions(active_graph_definitions())
