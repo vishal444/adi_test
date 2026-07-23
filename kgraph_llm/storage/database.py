@@ -25,9 +25,39 @@ class Database:
 
         with sqlite3.connect(self.path) as connection:
             connection.executescript(BASE_SCHEMA_PATH.read_text(encoding="utf-8"))
+            self._migrate_legacy_health_hospital(connection)
             for ministry in active_ministries():
                 for script in ministry.bootstrap_scripts:
                     connection.executescript(script.read_text(encoding="utf-8"))
+
+    @staticmethod
+    def _migrate_legacy_health_hospital(connection: sqlite3.Connection) -> None:
+        """Upgrade the mutable compatibility identity before health seeds run."""
+        table_exists = connection.execute(
+            """
+            SELECT 1
+            FROM sqlite_master
+            WHERE type = 'table' AND name = 'hospital'
+            """
+        ).fetchone()
+        if table_exists is None:
+            return
+
+        columns = {
+            str(row[1]) for row in connection.execute("PRAGMA table_info(hospital)")
+        }
+        if "master_facility_id" not in columns:
+            connection.execute(
+                """
+                ALTER TABLE hospital
+                ADD COLUMN master_facility_id INTEGER
+                    REFERENCES master_facility(facility_id)
+                """
+            )
+        if "effective_from" in columns:
+            connection.execute("ALTER TABLE hospital DROP COLUMN effective_from")
+        if "effective_to" in columns:
+            connection.execute("ALTER TABLE hospital DROP COLUMN effective_to")
 
     def exists(self) -> bool:
         return self.path.exists()

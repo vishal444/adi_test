@@ -1,7 +1,7 @@
 # Kerala health ministry analytics data model
 
 Status: implementation baseline  
-Registry version: `health-ministry-analytics-2026-07-22.1`
+Registry version: `health-ministry-analytics-2026-07-23.1`
 
 ## Scope
 
@@ -77,6 +77,12 @@ Primary keys enforce each grain. Foreign keys enforce governed dimensions.
 Non-negative counts and amounts, bounded percentages, enumerated statuses, and
 effective-date checks reject structurally invalid records.
 
+Cross-table triggers additionally require facility district keys to identify
+`DISTRICT` rows, local-body keys to identify direct children of the same
+district, and teaching facilities to use teaching-capable facility types.
+Organisation type and administrative level are controlled vocabularies used
+to distinguish `OVERSEES` and `CONTROLS` semantics from mere tree depth.
+
 ## Governed views and metrics
 
 Raw facts store metric components, not duplicate derived percentages. Governed
@@ -98,6 +104,12 @@ minimum data-quality score, capability inputs, allowed joins, quality rules,
 and purpose-limited access policies. Joins from a facility-month dataset to a
 category-grain dataset are declared one-to-many so a compiler cannot silently
 multiply facility totals.
+
+The join registry is intentionally narrow: extra category/station/demographic
+dimensions require governed pre-aggregation, while programme and scheme facts
+are district-month rather than facility-month facts. Access-policy role names
+refer to the external deployment IAM; the analytical database does not own a
+duplicate role directory.
 
 ## Peripheral K-Graph
 
@@ -133,7 +145,11 @@ entities or governed datasets.
 The earlier hospital funding/output pilot, equipment-asset demonstration,
 seven-level referral hierarchy, and daily surveillance tables remain
 available. They are compatibility fixtures while integrations migrate to the
-common facility model. `Hospital IS_A Facility` is explicit in the K-Graph.
+common facility model. `hospital.master_facility_id` is a nullable, unique
+foreign-key bridge for reconciled identities, and `Hospital IS_A Facility` is
+explicit in the K-Graph. Compatibility hospital identities mutate in place;
+effective-dated history belongs to the canonical facility and classification
+tables. A partial unique index allows only one current classification.
 
 New integrations should write only to the canonical prefixed model. A future
 migration can replace the compatibility tables after all callers and fixtures
@@ -153,4 +169,3 @@ is complete. Production deployment still requires:
   and incident-response controls;
 - item-level governed drill-down for critical medicines and equipment;
 - conformance tests for source freshness, late revisions, and period closure.
-

@@ -1,8 +1,8 @@
 # Kerala Health Department Database and K-Graph Architecture
 
 Status: current implementation  
-Architecture version: `health-ministry-analytics-2026-07-22.1`  
-Last updated: 22 July 2026
+Architecture version: `health-ministry-analytics-2026-07-23.1`
+Last updated: 23 July 2026
 
 ## 1. Purpose
 
@@ -150,6 +150,21 @@ erDiagram
 Organisation and facility records are effective-dated. Facts use stable integer
 keys, while human-readable codes remain unique business identifiers.
 
+`organisation_type` and `administrative_level` use controlled vocabularies.
+Organisation graph edges are selected from those classifications and the
+parent key: a `DEPARTMENT` oversees a same-level `DIRECTORATE`, while a
+`DIRECTORATE` controls typed organisations within its administrative scope.
+Tree depth by itself never selects `OVERSEES` or `CONTROLS`.
+
+Cross-table triggers enforce facility geography. `district_id` must identify a
+`DISTRICT`; `local_body_id`, when present, must identify a `LOCAL_BODY` whose
+direct parent is that same district. Reverse-protection triggers prevent later
+geography edits from invalidating those assignments.
+
+Facility type is authoritative for teaching capability. A facility may be
+`TEACHING` or `AFFILIATED` only when its type has `teaching_capable = 1`, and a
+type cannot lose that capability while such a facility uses it.
+
 ### 5.2 Analytical-category tables
 
 | Table | Classification |
@@ -267,6 +282,10 @@ enforce database-level restricted roles in addition to application policy.
 | `semantic_allowed_join` | Approved join keys, cardinality and status |
 | `semantic_quality_rule` | Dataset rule, severity and failure action |
 | `semantic_access_policy` | Role, resource, row-filter and purpose limitation |
+
+`semantic_access_policy.permitted_role` stores identifiers from the deployment
+IAM or directory service. Role lifecycle and membership are intentionally
+external; there is no duplicate role table in this analytical database.
 
 Facts store the components of ratios rather than duplicate calculated rates.
 Governed views calculate rates in one place and return `NULL` for a zero
@@ -504,6 +523,13 @@ One-to-many joins are safe only when the category remains in the result grain
 or the category dataset is aggregated before joining. The cardinality metadata
 exists specifically to prevent silent multiplication of facility totals.
 
+The narrow allow-list is deliberate. Service, infrastructure and vehicle facts
+carry extra service, demographic, infrastructure, station or vehicle
+dimensions and are excluded until a governed pre-aggregation rule preserves
+their grain. Programme and scheme facts are district-grain rather than
+facility-grain, so they are not valid facility-month joins merely because they
+share a month. New joins require explicit grain review and registry approval.
+
 ## 16. Governed query execution
 
 ```mermaid
@@ -555,10 +581,24 @@ daily_surveillance_run
 health_surveillance_signal
 ```
 
+`hospital` is a mutable compatibility identity rather than a history table, so
+its unused `effective_from` and `effective_to` columns were removed.
+Classification history remains in `hospital_facility_classification`, with a
+partial unique index ensuring at most one current row per hospital.
+
+The nullable, unique `hospital.master_facility_id` foreign key is the migration
+bridge to `master_facility`. The three demonstration hospitals are reconciled
+through it, and compatibility governed views expose the key. New compatibility
+rows may remain null only while reconciliation is pending; production cutover
+must backfill it and make the mapping mandatory. This bridge enables an
+explicit path for surveillance-to-resourcing work without assuming that legacy
+and canonical integer identifiers are interchangeable.
+
 New source integrations should target the canonical prefixed tables. The
 compatibility structures can be retired after:
 
-1. hospital identifiers are reconciled with `master_facility`;
+1. every hospital has a reconciled `master_facility_id` and the column is made
+   mandatory;
 2. annual pilot queries use monthly governed marts or an approved annual view;
 3. surveillance references the common facility identity;
 4. synthetic fixtures and all callers have migrated;

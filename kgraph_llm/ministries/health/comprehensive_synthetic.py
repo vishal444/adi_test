@@ -1118,7 +1118,7 @@ def seed_comprehensive_health_data(
 
         # Populate optional compatibility and policy columns at least once.
         connection.execute(
-            "UPDATE hospital SET effective_to = '2025-03-31' WHERE hospital_id = 50"
+            "UPDATE hospital SET master_facility_id = 1 WHERE hospital_id = 1"
         )
         connection.execute(
             """

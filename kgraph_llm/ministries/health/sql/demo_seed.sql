@@ -68,10 +68,12 @@ CROSS JOIN (
     SELECT 1, NULL, NULL, 'Hundreds', 150, 300, 'Villages and wards'
 ) AS profile;
 
-INSERT OR IGNORE INTO hospital VALUES
-(1, 'Alappuzha General Hospital', 4, '2020-04-01', NULL),
-(2, 'Kozhikode District Hospital', 11, '2020-04-01', NULL),
-(3, 'Thrissur General Hospital', 8, '2020-04-01', NULL);
+INSERT OR IGNORE INTO hospital
+    (hospital_id, hospital_name, district_id, master_facility_id)
+VALUES
+(1, 'Alappuzha General Hospital', 4, NULL),
+(2, 'Kozhikode District Hospital', 11, NULL),
+(3, 'Thrissur General Hospital', 8, NULL);
 
 INSERT OR IGNORE INTO hospital_facility_classification VALUES
 (1, 5, '2020-04-01', NULL, 'demo-health-v2'),

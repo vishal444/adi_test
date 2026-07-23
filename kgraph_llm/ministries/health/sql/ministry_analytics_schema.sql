@@ -42,9 +42,18 @@ CREATE TABLE IF NOT EXISTS master_organisation (
     organisation_id INTEGER PRIMARY KEY,
     organisation_code TEXT NOT NULL UNIQUE,
     organisation_name TEXT NOT NULL,
-    organisation_type TEXT NOT NULL,
+    organisation_type TEXT NOT NULL
+        CHECK (organisation_type IN (
+            'GOVERNMENT', 'DEPARTMENT', 'DIRECTORATE', 'MISSION',
+            'CORPORATION', 'AGENCY', 'REGULATOR',
+            'AUTONOMOUS_INSTITUTION', 'DISTRICT_OFFICE',
+            'FACILITY_ADMINISTRATION', 'OTHER'
+        )),
     parent_organisation_id INTEGER REFERENCES master_organisation(organisation_id),
-    administrative_level TEXT NOT NULL,
+    administrative_level TEXT NOT NULL
+        CHECK (administrative_level IN (
+            'STATE', 'DISTRICT', 'TALUK', 'BLOCK', 'LOCAL_BODY', 'FACILITY'
+        )),
     system_of_medicine_id INTEGER REFERENCES master_system_of_medicine(system_of_medicine_id),
     district_id INTEGER REFERENCES master_geographic_area(geographic_area_id),
     effective_from TEXT NOT NULL,
@@ -52,6 +61,36 @@ CREATE TABLE IF NOT EXISTS master_organisation (
     active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
     CHECK (effective_to IS NULL OR effective_to > effective_from)
 );
+
+-- The triggers also apply the vocabulary when an existing database predates
+-- the table-level CHECK constraints.
+CREATE TRIGGER IF NOT EXISTS validate_master_organisation_insert
+BEFORE INSERT ON master_organisation
+WHEN NEW.organisation_type NOT IN (
+         'GOVERNMENT', 'DEPARTMENT', 'DIRECTORATE', 'MISSION',
+         'CORPORATION', 'AGENCY', 'REGULATOR', 'AUTONOMOUS_INSTITUTION',
+         'DISTRICT_OFFICE', 'FACILITY_ADMINISTRATION', 'OTHER'
+     )
+  OR NEW.administrative_level NOT IN (
+         'STATE', 'DISTRICT', 'TALUK', 'BLOCK', 'LOCAL_BODY', 'FACILITY'
+     )
+BEGIN
+    SELECT RAISE(ABORT, 'invalid master_organisation classification');
+END;
+
+CREATE TRIGGER IF NOT EXISTS validate_master_organisation_update
+BEFORE UPDATE OF organisation_type, administrative_level ON master_organisation
+WHEN NEW.organisation_type NOT IN (
+         'GOVERNMENT', 'DEPARTMENT', 'DIRECTORATE', 'MISSION',
+         'CORPORATION', 'AGENCY', 'REGULATOR', 'AUTONOMOUS_INSTITUTION',
+         'DISTRICT_OFFICE', 'FACILITY_ADMINISTRATION', 'OTHER'
+     )
+  OR NEW.administrative_level NOT IN (
+         'STATE', 'DISTRICT', 'TALUK', 'BLOCK', 'LOCAL_BODY', 'FACILITY'
+     )
+BEGIN
+    SELECT RAISE(ABORT, 'invalid master_organisation classification');
+END;
 
 CREATE TABLE IF NOT EXISTS master_facility_type (
     facility_type_id INTEGER PRIMARY KEY,
@@ -95,6 +134,112 @@ CREATE TABLE IF NOT EXISTS master_facility (
     source_version TEXT NOT NULL,
     CHECK (effective_to IS NULL OR effective_to > effective_from)
 );
+
+-- SQLite cannot express these cross-table invariants as CHECK constraints.
+-- A local body is modelled as a direct child of its administrative district.
+CREATE TRIGGER IF NOT EXISTS validate_master_facility_geography_insert
+BEFORE INSERT ON master_facility
+BEGIN
+    SELECT CASE
+        WHEN NOT EXISTS (
+            SELECT 1
+            FROM master_geographic_area
+            WHERE geographic_area_id = NEW.district_id
+              AND area_level = 'DISTRICT'
+        )
+        THEN RAISE(ABORT, 'master_facility.district_id must reference a DISTRICT')
+    END;
+    SELECT CASE
+        WHEN NEW.local_body_id IS NOT NULL
+         AND NOT EXISTS (
+            SELECT 1
+            FROM master_geographic_area
+            WHERE geographic_area_id = NEW.local_body_id
+              AND area_level = 'LOCAL_BODY'
+              AND parent_geographic_area_id = NEW.district_id
+        )
+        THEN RAISE(ABORT, 'master_facility.local_body_id must reference a LOCAL_BODY in district_id')
+    END;
+END;
+
+CREATE TRIGGER IF NOT EXISTS validate_master_facility_geography_update
+BEFORE UPDATE OF district_id, local_body_id ON master_facility
+BEGIN
+    SELECT CASE
+        WHEN NOT EXISTS (
+            SELECT 1
+            FROM master_geographic_area
+            WHERE geographic_area_id = NEW.district_id
+              AND area_level = 'DISTRICT'
+        )
+        THEN RAISE(ABORT, 'master_facility.district_id must reference a DISTRICT')
+    END;
+    SELECT CASE
+        WHEN NEW.local_body_id IS NOT NULL
+         AND NOT EXISTS (
+            SELECT 1
+            FROM master_geographic_area
+            WHERE geographic_area_id = NEW.local_body_id
+              AND area_level = 'LOCAL_BODY'
+              AND parent_geographic_area_id = NEW.district_id
+        )
+        THEN RAISE(ABORT, 'master_facility.local_body_id must reference a LOCAL_BODY in district_id')
+    END;
+END;
+
+CREATE TRIGGER IF NOT EXISTS protect_master_facility_geography_update
+BEFORE UPDATE OF area_level, parent_geographic_area_id ON master_geographic_area
+WHEN EXISTS (
+    SELECT 1
+    FROM master_facility AS facility
+    WHERE (facility.district_id = OLD.geographic_area_id
+           AND NEW.area_level <> 'DISTRICT')
+       OR (facility.local_body_id = OLD.geographic_area_id
+           AND (NEW.area_level <> 'LOCAL_BODY'
+                OR NEW.parent_geographic_area_id IS NOT facility.district_id))
+)
+BEGIN
+    SELECT RAISE(ABORT, 'geographic area update would invalidate master_facility geography');
+END;
+
+CREATE TRIGGER IF NOT EXISTS validate_master_facility_teaching_insert
+BEFORE INSERT ON master_facility
+WHEN NEW.teaching_status <> 'NON_TEACHING'
+ AND NOT EXISTS (
+     SELECT 1
+     FROM master_facility_type
+     WHERE facility_type_id = NEW.facility_type_id
+       AND teaching_capable = 1
+ )
+BEGIN
+    SELECT RAISE(ABORT, 'teaching facility requires a teaching-capable facility type');
+END;
+
+CREATE TRIGGER IF NOT EXISTS validate_master_facility_teaching_update
+BEFORE UPDATE OF facility_type_id, teaching_status ON master_facility
+WHEN NEW.teaching_status <> 'NON_TEACHING'
+ AND NOT EXISTS (
+     SELECT 1
+     FROM master_facility_type
+     WHERE facility_type_id = NEW.facility_type_id
+       AND teaching_capable = 1
+ )
+BEGIN
+    SELECT RAISE(ABORT, 'teaching facility requires a teaching-capable facility type');
+END;
+
+CREATE TRIGGER IF NOT EXISTS protect_teaching_capability_update
+BEFORE UPDATE OF teaching_capable ON master_facility_type
+WHEN NEW.teaching_capable = 0
+ AND EXISTS (
+     SELECT 1
+     FROM master_facility
+     WHERE facility_type_id = OLD.facility_type_id
+       AND teaching_status <> 'NON_TEACHING'
+ )
+BEGIN
+    SELECT RAISE(ABORT, 'facility type is used by a teaching facility');
+END;
 
 CREATE TABLE IF NOT EXISTS master_cost_category (
     cost_category_id INTEGER PRIMARY KEY,
@@ -842,6 +987,10 @@ CREATE TABLE IF NOT EXISTS semantic_capability_input (
     PRIMARY KEY (capability_id, input_type, input_name)
 );
 
+-- This registry is intentionally allow-list based. Category-grain datasets
+-- are omitted unless the compiler can preserve or pre-aggregate every
+-- additional dimension; district-grain programme/scheme facts are not
+-- facility-grain joins.
 CREATE TABLE IF NOT EXISTS semantic_allowed_join (
     left_dataset TEXT NOT NULL,
     right_dataset TEXT NOT NULL,
@@ -872,6 +1021,9 @@ CREATE TABLE IF NOT EXISTS semantic_access_policy (
     purpose_limitation TEXT NOT NULL,
     active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1))
 );
+
+-- permitted_role values are external IAM role identifiers. This analytical
+-- database deliberately does not duplicate the authoritative role directory.
 
 -- Governed analytical views expose stored components and calculate rates in a
 -- single semantic location, avoiding duplicated percentages in fact tables.

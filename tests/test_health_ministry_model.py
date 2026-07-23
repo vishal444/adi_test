@@ -10,6 +10,10 @@ from kgraph_llm.ministries.health.comprehensive_synthetic import (
     HIGH_CARDINALITY_TABLES,
     seed_comprehensive_health_data,
 )
+from kgraph_llm.ministries.health.ministry_graph import (
+    MINISTRY_ENTITIES,
+    MINISTRY_RELATIONSHIPS,
+)
 from kgraph_llm.ministries.health.synthetic import seed_synthetic_business_data
 from kgraph_llm.ministries.registry import active_graph_definitions
 from kgraph_llm.storage import Database
@@ -113,6 +117,142 @@ class HealthMinistryModelTest(unittest.TestCase):
             equipment["maintenance_cost_ratio_percentage"], 1.8333, places=4
         )
 
+    def test_facility_geography_levels_and_district_match_are_enforced(self) -> None:
+        with sqlite3.connect(self.database.path) as connection:
+            with self.assertRaisesRegex(
+                sqlite3.IntegrityError, "district_id must reference a DISTRICT"
+            ):
+                connection.execute(
+                    "UPDATE master_facility SET district_id = 1 WHERE facility_id = 1"
+                )
+            with self.assertRaisesRegex(
+                sqlite3.IntegrityError, "LOCAL_BODY in district_id"
+            ):
+                connection.execute(
+                    "UPDATE master_facility SET local_body_id = 1002 WHERE facility_id = 1"
+                )
+            with self.assertRaisesRegex(
+                sqlite3.IntegrityError, "would invalidate master_facility geography"
+            ):
+                connection.execute(
+                    """
+                    UPDATE master_geographic_area
+                    SET parent_geographic_area_id = 111
+                    WHERE geographic_area_id = 1001
+                    """
+                )
+
+    def test_teaching_status_requires_a_teaching_capable_type(self) -> None:
+        with sqlite3.connect(self.database.path) as connection:
+            with self.assertRaisesRegex(
+                sqlite3.IntegrityError, "teaching-capable facility type"
+            ):
+                connection.execute(
+                    """
+                    UPDATE master_facility
+                    SET teaching_status = 'TEACHING'
+                    WHERE facility_id = 1
+                    """
+                )
+            connection.execute(
+                """
+                UPDATE master_facility
+                SET facility_type_id = 6, teaching_status = 'TEACHING'
+                WHERE facility_id = 1
+                """
+            )
+            with self.assertRaisesRegex(
+                sqlite3.IntegrityError, "used by a teaching facility"
+            ):
+                connection.execute(
+                    """
+                    UPDATE master_facility_type
+                    SET teaching_capable = 0
+                    WHERE facility_type_id = 6
+                    """
+                )
+
+    def test_organisation_classifications_use_controlled_vocabularies(self) -> None:
+        with sqlite3.connect(self.database.path) as connection:
+            with self.assertRaises(sqlite3.IntegrityError):
+                connection.execute(
+                    """
+                    UPDATE master_organisation
+                    SET organisation_type = 'UNKNOWN'
+                    WHERE organisation_id = 10
+                    """
+                )
+            with self.assertRaises(sqlite3.IntegrityError):
+                connection.execute(
+                    """
+                    UPDATE master_organisation
+                    SET administrative_level = 'UNKNOWN'
+                    WHERE organisation_id = 10
+                    """
+                )
+
+    def test_only_one_current_hospital_classification_is_allowed(self) -> None:
+        with sqlite3.connect(self.database.path) as connection:
+            with self.assertRaises(sqlite3.IntegrityError):
+                connection.execute(
+                    """
+                    INSERT INTO hospital_facility_classification
+                        (hospital_id, level_id, effective_from, effective_to,
+                         source_version)
+                    VALUES (1, 6, '2026-07-01', NULL, 'test')
+                    """
+                )
+
+    def test_compatibility_hospital_has_canonical_bridge_not_vestigial_dates(self) -> None:
+        with sqlite3.connect(self.database.path) as connection:
+            columns = {
+                row[1] for row in connection.execute("PRAGMA table_info(hospital)")
+            }
+            bridge = connection.execute(
+                "SELECT master_facility_id FROM hospital WHERE hospital_id = 1"
+            ).fetchone()
+
+        self.assertNotIn("effective_from", columns)
+        self.assertNotIn("effective_to", columns)
+        self.assertEqual(bridge, (1,))
+
+    def test_initialize_migrates_a_legacy_hospital_identity_table(self) -> None:
+        legacy_path = Path(self.temp_dir.name) / "legacy-health.db"
+        with sqlite3.connect(legacy_path) as connection:
+            connection.executescript(
+                """
+                CREATE TABLE district (
+                    district_id INTEGER PRIMARY KEY,
+                    district_name TEXT NOT NULL UNIQUE
+                );
+                CREATE TABLE hospital (
+                    hospital_id INTEGER PRIMARY KEY,
+                    hospital_name TEXT NOT NULL UNIQUE,
+                    district_id INTEGER NOT NULL REFERENCES district(district_id),
+                    effective_from TEXT NOT NULL,
+                    effective_to TEXT
+                );
+                INSERT INTO district VALUES (99, 'Legacy District');
+                INSERT INTO hospital
+                VALUES (99, 'Unreconciled Legacy Hospital', 99, '2020-01-01', NULL);
+                """
+            )
+
+        Database(legacy_path).initialize()
+
+        with sqlite3.connect(legacy_path) as connection:
+            columns = {
+                row[1] for row in connection.execute("PRAGMA table_info(hospital)")
+            }
+            legacy_bridge = connection.execute(
+                "SELECT master_facility_id FROM hospital WHERE hospital_id = 99"
+            ).fetchone()
+
+        self.assertIn("master_facility_id", columns)
+        self.assertNotIn("effective_from", columns)
+        self.assertNotIn("effective_to", columns)
+        self.assertEqual(legacy_bridge, (None,))
+
     def test_semantic_registry_records_quality_privacy_and_join_rules(self) -> None:
         with sqlite3.connect(self.database.path) as connection:
             metric = connection.execute(
@@ -184,6 +324,25 @@ class HealthMinistryModelTest(unittest.TestCase):
         self.assertFalse(
             any(name.startswith("restricted_") for name in graph.allowed_datasets())
         )
+
+    def test_ministry_graph_relationship_endpoints_are_declared_locally(self) -> None:
+        entities = {entity["name"] for entity in MINISTRY_ENTITIES}
+        endpoints = {
+            relationship[key]
+            for relationship in MINISTRY_RELATIONSHIPS
+            for key in ("from_entity", "to_entity")
+        }
+
+        self.assertEqual(endpoints - entities, set())
+        organisation_edges = {
+            relationship["predicate"]: relationship["join_expression"]
+            for relationship in MINISTRY_RELATIONSHIPS
+            if relationship["predicate"] in {"oversees", "controls"}
+        }
+        self.assertIn("organisation_type", organisation_edges["oversees"])
+        self.assertIn("organisation_type", organisation_edges["controls"])
+        self.assertIn("administrative_level", organisation_edges["oversees"])
+        self.assertIn("administrative_level", organisation_edges["controls"])
 
     def test_graph_registers_grains_and_category_safe_joins(self) -> None:
         graph = NetworkXSemanticGraph.from_definitions(active_graph_definitions())

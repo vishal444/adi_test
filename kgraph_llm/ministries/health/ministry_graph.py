@@ -38,6 +38,8 @@ def _dataset(
 
 
 MINISTRY_ENTITIES = (
+    {"name": "Hospital", "description": "Compatibility hospital identity mapped, when reconciled, to the common Facility master."},
+    {"name": "District", "description": "Effective-dated Kerala administrative district."},
     {"name": "Department", "description": "Top-level Kerala health or AYUSH administrative department."},
     {"name": "Directorate", "description": "Directorate responsible for a defined health-service or education mandate."},
     {"name": "Organisation", "description": "Directorate, mission, corporation, regulator, autonomous institution, or district office."},
@@ -294,10 +296,10 @@ MINISTRY_METRICS = (
 
 
 MINISTRY_RELATIONSHIPS = (
-    {"from_entity": "Department", "predicate": "oversees", "to_entity": "Directorate", "join_expression": "master_organisation.parent_organisation_id = parent.organisation_id", "description": "A department oversees its directorates."},
-    {"from_entity": "Directorate", "predicate": "controls", "to_entity": "Organisation", "join_expression": "master_organisation.parent_organisation_id = directorate.organisation_id", "description": "A directorate controls or supervises subordinate organisations."},
+    {"from_entity": "Department", "predicate": "oversees", "to_entity": "Directorate", "join_expression": "child.parent_organisation_id = parent.organisation_id AND parent.organisation_type = 'DEPARTMENT' AND child.organisation_type = 'DIRECTORATE' AND child.administrative_level = parent.administrative_level", "description": "A department oversees a child explicitly classified as a directorate at the same administrative level; tree depth alone is insufficient."},
+    {"from_entity": "Directorate", "predicate": "controls", "to_entity": "Organisation", "join_expression": "child.parent_organisation_id = parent.organisation_id AND parent.organisation_type = 'DIRECTORATE' AND child.organisation_type <> 'DIRECTORATE' AND (child.administrative_level = parent.administrative_level OR (parent.administrative_level = 'STATE' AND child.administrative_level IN ('DISTRICT', 'TALUK', 'BLOCK', 'LOCAL_BODY', 'FACILITY')))", "description": "A directorate controls a subordinate organisation selected by governed organisation type and administrative scope; tree depth alone is insufficient."},
     {"from_entity": "Organisation", "predicate": "operates", "to_entity": "Facility", "join_expression": "master_facility.parent_organisation_id = master_organisation.organisation_id", "description": "Administrative operation or responsibility for a facility."},
-    {"from_entity": "Hospital", "predicate": "is_a", "to_entity": "Facility", "join_expression": "hospital identity maps to master_facility", "description": "Legacy hospital identities are a subset of the common facility model."},
+    {"from_entity": "Hospital", "predicate": "is_a", "to_entity": "Facility", "join_expression": "hospital.master_facility_id = master_facility.facility_id", "description": "A reconciled compatibility hospital maps to exactly one common facility identity."},
     {"from_entity": "Facility", "predicate": "has_type", "to_entity": "FacilityType", "join_expression": "master_facility.facility_type_id = master_facility_type.facility_type_id", "description": "Governed facility classification."},
     {"from_entity": "Facility", "predicate": "located_in", "to_entity": "District", "join_expression": "master_facility.district_id = master_geographic_area.geographic_area_id", "description": "Administrative district location."},
     {"from_entity": "Facility", "predicate": "located_in", "to_entity": "LocalBody", "join_expression": "master_facility.local_body_id = master_geographic_area.geographic_area_id", "description": "Local-body location."},
@@ -393,4 +395,3 @@ MINISTRY_DATASET_JOINS = (
         "description": "Join only when budget head remains visible or is aggregated before the join.",
     },
 )
-

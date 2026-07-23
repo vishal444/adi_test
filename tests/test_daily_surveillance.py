@@ -21,8 +21,8 @@ class DailyAdmissionSurveillanceTest(unittest.TestCase):
             connection.execute(
                 """
                 INSERT INTO hospital
-                    (hospital_id, hospital_name, district_id, effective_from, effective_to)
-                VALUES (4, 'Kozhikode Community Hospital', 11, '2020-04-01', NULL)
+                    (hospital_id, hospital_name, district_id, master_facility_id)
+                VALUES (4, 'Kozhikode Community Hospital', 11, NULL)
                 """
             )
 

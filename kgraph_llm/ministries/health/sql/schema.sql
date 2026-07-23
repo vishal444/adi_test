@@ -7,9 +7,12 @@ CREATE TABLE IF NOT EXISTS hospital (
     hospital_id INTEGER PRIMARY KEY,
     hospital_name TEXT NOT NULL UNIQUE,
     district_id INTEGER NOT NULL REFERENCES district(district_id),
-    effective_from TEXT NOT NULL,
-    effective_to TEXT
+    master_facility_id INTEGER REFERENCES master_facility(facility_id)
 );
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_hospital_master_facility
+ON hospital(master_facility_id)
+WHERE master_facility_id IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS healthcare_facility_level (
     level_id INTEGER PRIMARY KEY,
@@ -41,6 +44,10 @@ CREATE TABLE IF NOT EXISTS hospital_facility_classification (
     PRIMARY KEY (hospital_id, effective_from),
     CHECK (effective_to IS NULL OR effective_to > effective_from)
 );
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_hospital_facility_classification_current
+ON hospital_facility_classification(hospital_id)
+WHERE effective_to IS NULL;
 
 CREATE TABLE IF NOT EXISTS district_facility_distribution_profile (
     district_id INTEGER NOT NULL REFERENCES district(district_id),
@@ -167,8 +174,20 @@ CREATE TABLE IF NOT EXISTS hospital_equipment (
     source_version TEXT NOT NULL
 );
 
-CREATE VIEW IF NOT EXISTS analytics_health_hospital_funding_year AS
+-- Recreate compatibility views so existing databases receive newly governed
+-- bridge fields when Database.initialize() upgrades the source schema.
+DROP VIEW IF EXISTS analytics_health_hospital_funding_year;
+DROP VIEW IF EXISTS analytics_health_hospital_output_year;
+DROP VIEW IF EXISTS analytics_health_admission_daily;
+DROP VIEW IF EXISTS analytics_health_surveillance_signal;
+DROP VIEW IF EXISTS analytics_health_hospital_equipment;
+DROP VIEW IF EXISTS analytics_health_hospital_care_level;
+DROP VIEW IF EXISTS analytics_health_facility_referral_route;
+DROP VIEW IF EXISTS analytics_health_district_referral_pyramid;
+
+CREATE VIEW analytics_health_hospital_funding_year AS
 SELECT h.hospital_id,
+       h.master_facility_id,
        h.hospital_name,
        d.district_name,
        f.fiscal_year,
@@ -180,8 +199,9 @@ JOIN hospital AS h ON h.hospital_id = f.hospital_id
 JOIN district AS d ON d.district_id = h.district_id
 WHERE f.funding_category = 'operating';
 
-CREATE VIEW IF NOT EXISTS analytics_health_hospital_output_year AS
+CREATE VIEW analytics_health_hospital_output_year AS
 SELECT h.hospital_id,
+       h.master_facility_id,
        h.hospital_name,
        d.district_name,
        o.fiscal_year,
@@ -193,8 +213,9 @@ FROM hospital_output AS o
 JOIN hospital AS h ON h.hospital_id = o.hospital_id
 JOIN district AS d ON d.district_id = h.district_id;
 
-CREATE VIEW IF NOT EXISTS analytics_health_admission_daily AS
+CREATE VIEW analytics_health_admission_daily AS
 SELECT a.hospital_id,
+       h.master_facility_id,
        h.hospital_name,
        h.district_id AS hospital_district_id,
        hospital_district.district_name AS hospital_district_name,
@@ -217,7 +238,7 @@ LEFT JOIN hospital_daily_submission AS submission
   ON submission.hospital_id = a.hospital_id
  AND submission.reporting_date = a.reporting_date;
 
-CREATE VIEW IF NOT EXISTS analytics_health_surveillance_signal AS
+CREATE VIEW analytics_health_surveillance_signal AS
 SELECT signal.signal_id,
        signal.reporting_date,
        signal.geography_type,
@@ -241,9 +262,10 @@ FROM health_surveillance_signal AS signal
 JOIN syndrome_category AS syndrome
   ON syndrome.syndrome_code = signal.syndrome_code;
 
-CREATE VIEW IF NOT EXISTS analytics_health_hospital_equipment AS
+CREATE VIEW analytics_health_hospital_equipment AS
 SELECT e.equipment_id,
        e.hospital_id,
+       h.master_facility_id,
        h.hospital_name,
        d.district_name,
        e.equipment_type,
@@ -257,8 +279,9 @@ FROM hospital_equipment AS e
 JOIN hospital AS h ON h.hospital_id = e.hospital_id
 JOIN district AS d ON d.district_id = h.district_id;
 
-CREATE VIEW IF NOT EXISTS analytics_health_hospital_care_level AS
+CREATE VIEW analytics_health_hospital_care_level AS
 SELECT h.hospital_id,
+       h.master_facility_id,
        h.hospital_name,
        d.district_name,
        l.level_code,
@@ -276,7 +299,7 @@ JOIN district AS d ON d.district_id = h.district_id
 JOIN healthcare_facility_level AS l ON l.level_id = c.level_id
 WHERE c.effective_to IS NULL;
 
-CREATE VIEW IF NOT EXISTS analytics_health_facility_referral_route AS
+CREATE VIEW analytics_health_facility_referral_route AS
 SELECT source.hierarchy_order AS from_hierarchy_order,
        source.level_code AS from_level_code,
        source.display_name AS from_level_name,
@@ -294,7 +317,7 @@ FROM healthcare_referral_route AS route
 JOIN healthcare_facility_level AS source ON source.level_id = route.from_level_id
 JOIN healthcare_facility_level AS target ON target.level_id = route.to_level_id;
 
-CREATE VIEW IF NOT EXISTS analytics_health_district_referral_pyramid AS
+CREATE VIEW analytics_health_district_referral_pyramid AS
 SELECT d.district_id,
        d.district_name,
        l.level_code,

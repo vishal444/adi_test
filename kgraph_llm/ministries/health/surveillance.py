@@ -283,15 +283,16 @@ class DailyAdmissionSurveillance:
 
     @staticmethod
     def _expected_hospitals(connection: sqlite3.Connection, target: date) -> int:
+        # Compatibility hospital identities are mutable in place. Effective
+        # dating belongs to their classification history and canonical
+        # master_facility record, not this identity table.
+        del target
         return int(
             connection.execute(
                 """
                 SELECT COUNT(*)
                 FROM hospital
-                WHERE effective_from <= ?
-                  AND (effective_to IS NULL OR effective_to > ?)
-                """,
-                (target.isoformat(), target.isoformat()),
+                """
             ).fetchone()[0]
         )
 
@@ -305,10 +306,8 @@ class DailyAdmissionSurveillance:
                 JOIN hospital AS h ON h.hospital_id = submission.hospital_id
                 WHERE submission.reporting_date = ?
                   AND submission.submission_status = 'complete'
-                  AND h.effective_from <= ?
-                  AND (h.effective_to IS NULL OR h.effective_to > ?)
                 """,
-                (target.isoformat(), target.isoformat(), target.isoformat()),
+                (target.isoformat(),),
             ).fetchone()[0]
         )
 

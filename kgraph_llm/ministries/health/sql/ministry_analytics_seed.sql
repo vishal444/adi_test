@@ -98,6 +98,21 @@ VALUES
 (2, 'KKD-DH-001', 'Kozhikode District Hospital', 5, 11, 111, 1002, 1, 'STATE_GOVERNMENT', 'URBAN', 'NON_TEACHING', 450, 'OPERATIONAL', 11.2588, 75.7804, '2020-04-01', NULL, 1, 'demo-ministry-v1'),
 (3, 'TSR-GH-001', 'Thrissur General Hospital', 5, 11, 108, 1003, 1, 'STATE_GOVERNMENT', 'URBAN', 'NON_TEACHING', 400, 'OPERATIONAL', 10.5276, 76.2144, '2020-04-01', NULL, 1, 'demo-ministry-v1');
 
+-- Reconcile the compatibility hospital identities after the canonical
+-- facilities exist. Unmapped compatibility rows retain NULL during migration.
+UPDATE hospital
+SET master_facility_id = (
+    SELECT facility.facility_id
+    FROM master_facility AS facility
+    WHERE facility.facility_name = hospital.hospital_name
+)
+WHERE master_facility_id IS NULL
+  AND EXISTS (
+      SELECT 1
+      FROM master_facility AS facility
+      WHERE facility.facility_name = hospital.hospital_name
+  );
+
 INSERT OR IGNORE INTO master_cost_category VALUES
 (1, 'SALARY', 'Salary', 1), (2, 'MEDICINE', 'Medicine', 1),
 (3, 'EQUIPMENT_MAINT', 'Equipment maintenance', 1), (4, 'CAPITAL', 'Capital works', 1);

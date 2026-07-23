@@ -97,7 +97,6 @@ def seed_synthetic_business_data(
                 hospital_id,
                 f"{district_name} Synthetic Hospital {hospital_id:04d}",
                 district_id,
-                "2020-04-01",
                 None,
             )
         )
@@ -299,8 +298,8 @@ def seed_synthetic_business_data(
         connection.executemany(
             """
             INSERT INTO hospital
-                (hospital_id, hospital_name, district_id, effective_from, effective_to)
-            VALUES (?, ?, ?, ?, ?)
+                (hospital_id, hospital_name, district_id, master_facility_id)
+            VALUES (?, ?, ?, ?)
             """,
             hospitals,
         )
