@@ -3,7 +3,9 @@ from __future__ import annotations
 import argparse
 import json
 import sqlite3
+from collections.abc import Mapping, Sequence
 from pathlib import Path
+from typing import Any
 
 from .knowledge_graph import (
     NetworkXSemanticGraph,
@@ -24,6 +26,78 @@ from .storage import Database
 
 
 DEFAULT_DB = Path("var/kerala_demo.db")
+
+
+def format_result_table(rows: Sequence[Mapping[str, Any]]) -> str:
+    """Render governed result rows as a terminal- and Markdown-friendly table."""
+    if not rows:
+        return "| Result |\n| --- |\n| No rows returned |"
+
+    columns = tuple(
+        dict.fromkeys(
+            key
+            for row in rows
+            for key in row
+            if not key.startswith("_")
+        )
+    )
+    if not columns:
+        return "| Result |\n| --- |\n| No displayable columns returned |"
+
+    def display(value: Any) -> str:
+        if value is None:
+            return "NULL"
+        if isinstance(value, bool):
+            return "true" if value else "false"
+        return (
+            str(value)
+            .replace("\r\n", "\n")
+            .replace("\r", "\n")
+            .replace("\n", "<br>")
+            .replace("|", r"\|")
+        )
+
+    values = tuple(
+        tuple(display(row.get(column)) for column in columns)
+        for row in rows
+    )
+    numeric = tuple(
+        any(row.get(column) is not None for row in rows)
+        and all(
+            row.get(column) is None
+            or (
+                isinstance(row.get(column), (int, float))
+                and not isinstance(row.get(column), bool)
+            )
+            for row in rows
+        )
+        for column in columns
+    )
+    widths = tuple(
+        max(len(column), *(len(row[index]) for row in values))
+        for index, column in enumerate(columns)
+    )
+
+    def render_row(cells: Sequence[str], *, align_numbers: bool = False) -> str:
+        rendered = []
+        for index, cell in enumerate(cells):
+            if align_numbers and numeric[index]:
+                rendered.append(cell.rjust(widths[index]))
+            else:
+                rendered.append(cell.ljust(widths[index]))
+        return "| " + " | ".join(rendered) + " |"
+
+    separator = "| " + " | ".join(
+        ("-" * max(3, width - 1) + ":") if numeric[index] else "-" * max(3, width)
+        for index, width in enumerate(widths)
+    ) + " |"
+    return "\n".join(
+        (
+            render_row(columns),
+            separator,
+            *(render_row(row, align_numbers=True) for row in values),
+        )
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -218,6 +292,7 @@ def main(argv: list[str] | None = None) -> int:
         if outcome.sql:
             print("\nValidated SQL:\n" + outcome.sql.strip())
             print(f"\nRows: {len(outcome.rows)}")
+            print("\nResult data:\n" + format_result_table(outcome.rows))
         if outcome.provenance.get("execution_mode") == "SEMANTIC_PLAN_COMPILED":
             plan = outcome.provenance["semantic_plan"]
             print(
